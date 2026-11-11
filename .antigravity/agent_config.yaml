@@ -1,0 +1,26 @@
+name: "DataPulse AST Debugger Auditor"
+version: "1.0.0"
+mode: "read-only"
+security_policy:
+  allow_code_execution: false
+  allow_file_mutation: false
+  telemetry_opt_in_only: true
+  sanitize_source_code_before_share: true
+
+llm:
+  provider: "google-genai"
+  model: "gemini-2.5-pro"
+  temperature: 0.1
+  response_mime_type: "application/json"
+
+memory:
+  engine: "chromadb"
+  persist_directory: "./.datapulse_memory"
+  collection_name: "code_diagnostics_memory"
+  embedding_model: "all-MiniLM-L6-v2"
+  rag_top_k: 3
+
+supported_languages:
+  - python
+  - sql
+  - r

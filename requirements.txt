@@ -1,0 +1,22 @@
+# Core AST Parsing (Repositórios: tree-sitter/tree-sitter & grantjenks/py-tree-sitter-languages)
+tree-sitter==0.21.3
+tree-sitter-languages>=1.10.2
+
+# Banco Vetorial Local e Orquestração (Repositórios: chroma-core/chroma, run-llama/llama_index)
+chromadb>=0.5.0
+llama-index-core>=0.10.30
+sentence-transformers>=2.7.0
+
+# Dashboard e Visualização (Repositório: streamlit/streamlit)
+streamlit>=1.35.0
+plotly>=5.22.0
+pandas>=2.2.2
+
+# Agente LLM & Validação
+google-genai>=0.3.0
+pydantic>=2.7.1
+requests>=2.31.0
+pyyaml>=6.0.1
+
+# Testes Automatizados
+pytest>=8.2.0
