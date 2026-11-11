@@ -1,37 +1,50 @@
-name: DataPulse AST Debugger CI
+name: CI/CD Test, Audit & Release
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ "main" ]
+    tags: [ "v*" ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-  test-and-audit:
+  test_and_audit:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ["3.11", "3.12"]
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout do Repositório
         uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Configurar Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
 
-      - name: Install Dependencies
+      - name: Instalar Dependências e Pytest
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Verify Tree-sitter AST Grammars
+      - name: Verificar Gramáticas AST (Tree-sitter)
         run: |
           python setup_grammars.py
 
-      - name: Run Unit & Privacy Sanitization Tests
+      - name: Executar Testes Unitários e Sanitização (Quality Gate)
         run: |
-          pytest -v
+          python -m pytest -v
+
+      - name: Criar Release Pública no GitHub (Quando subir uma Tag v*)
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.python-version == '3.12'
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          draft: false
+          prerelease: false
