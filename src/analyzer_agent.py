@@ -16,11 +16,11 @@ except Exception:
     HAS_GENAI = False
 
 
-SYSTEM_PROMPT = """Você é o Motor de Diagnóstico Estático do DataPulse. Sua função é analisar blocos de código (Python, SQL, R) extraídos via AST, juntamente com suas árvores sintáticas e histórico de memória vetorial.
+SYSTEM_PROMPT = """Você é o Motor de Diagnóstico Estático do DataPulse. Sua função é analisar blocos de código (Python, SQL, R, JavaScript/TypeScript) extraídos via AST, juntamente com suas árvores sintáticas e histórico de memória vetorial.
 
 REGRAS ESTRITAS DE SEGURANÇA:
 1. Você opera em modo 100% READ-ONLY. Jamais gere comandos de sistema, scripts de alteração de arquivos ou instruções de execução direta.
-2. Foque em bugs de engenharia de dados: vazamento de memória em DataFrames, queries SQL sem índice ou vulneráveis a injeção, falta de vetorização em R/Python, problemas de tipagem e concorrência.
+2. Foque em bugs de engenharia de dados e backend: vazamento de memória em DataFrames, queries SQL sem índice ou vulneráveis a injeção, falta de vetorização em R/Python, problemas de tipagem e concorrência, e em JavaScript/Node: eval/injeção de comando, I/O síncrono no event loop, ReDoS, promises sem tratamento e segredos hardcoded.
 3. Compare o bloco atual com os "Casos Similares da Memória Local" fornecidos no contexto. Se for uma reincidência, destaque isso.
 4. Retorne EXCLUSIVAMENTE um objeto JSON válido seguindo o schema `DiagnosticReport`."""
 
@@ -286,5 +286,97 @@ class DataPulseAnalyzerAgent:
                         "}"
                     ),
                 )
+
+        elif ap.language == "javascript":
+            return self._javascript_heuristic_diagnosis(code, reincidence_note)
+
+        return None
+
+    @staticmethod
+    def _javascript_heuristic_diagnosis(
+        code: str, reincidence_note: str
+    ) -> Optional[DiagnosticReport]:
+        """Heurísticas JS/TS/Node inspiradas em eslint-plugin-security, eslint-plugin-n e eslint-plugin-promise."""
+        import re
+
+        def report(sev: str, cat: str, cot: str, summary: str, fix: str) -> DiagnosticReport:
+            return DiagnosticReport(
+                has_issue=True,
+                severity=sev,
+                error_category=cat,
+                chain_of_thought=cot,
+                diagnostic_summary=summary + reincidence_note,
+                suggested_fix=fix,
+            )
+
+        # security/detect-eval-with-expression
+        if re.search(r"\beval\s*\(|\bnew\s+Function\s*\(", code):
+            return report(
+                "CRITICAL", "JS_Eval_Code_Injection",
+                "Chamada a eval()/new Function() identificada na AST; qualquer entrada externa vira execução arbitrária.",
+                "Uso de `eval()` / `new Function()` permite execução arbitrária de código (Code Injection).",
+                "const result = JSON.parse(input); // ou lookup em tabela de funções permitidas",
+            )
+
+        # security/detect-child-process (+ interpolação)
+        if re.search(r"\b(?:exec|execSync)\s*\(\s*(?:`[^`]*\$\{|[^)]*['\"]\s*\+)", code):
+            return report(
+                "CRITICAL", "JS_Command_Injection",
+                "child_process.exec com string interpolada/concatenada: o shell interpreta a entrada.",
+                "`child_process.exec` com template literal ou concatenação permite injeção de comandos de shell.",
+                "const { execFile } = require('node:child_process');\nexecFile('git', ['log', '--', userPath], cb);",
+            )
+
+        # SQL injection via template literal / concatenação
+        if re.search(r"`\s*(?:SELECT|INSERT|UPDATE|DELETE)\b[^`]*\$\{", code, re.IGNORECASE) or re.search(
+            r"['\"]\s*(?:SELECT|INSERT|UPDATE|DELETE)\b[^'\"]*['\"]\s*\+", code, re.IGNORECASE
+        ):
+            return report(
+                "CRITICAL", "SQL_Injection_Vulnerability",
+                "Query SQL montada via template literal/concatenação com valor dinâmico.",
+                "Construção de query SQL por interpolação em JavaScript expõe a aplicação a SQL Injection.",
+                "const { rows } = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);",
+            )
+
+        # Segredos hardcoded
+        if re.search(
+            r"(?i)\b(?:password|passwd|secret|api[_-]?key|token|private[_-]?key)\w*\s*[:=]\s*['\"][^'\"\s]{8,}['\"]",
+            code,
+        ):
+            return report(
+                "HIGH", "JS_Hardcoded_Secret",
+                "Literal com nome de credencial atribuído diretamente no código-fonte.",
+                "Credencial/segredo hardcoded no código-fonte pode vazar via repositório ou bundle.",
+                "const apiKey = process.env.API_KEY; // carregue de variável de ambiente / secret manager",
+            )
+
+        # security/detect-unsafe-regex + detect-non-literal-regexp
+        if re.search(r"\((?:[^()\s]*)[+*]\)[+*?{]", code) or re.search(r"new\s+RegExp\(\s*[A-Za-z_$]", code):
+            return report(
+                "HIGH", "JS_ReDoS_Unsafe_Regex",
+                "Regex com quantificador aninhado ou construída a partir de variável: risco de backtracking catastrófico.",
+                "Expressão regular vulnerável a ReDoS (quantificadores aninhados / RegExp não-literal) pode travar o event loop.",
+                "const safe = /^[a-z0-9]+$/i; // evite grupos aninhados com + ou *; valide/escape entradas dinâmicas",
+            )
+
+        # n/no-sync
+        if re.search(r"\b(?:fs|fsp)\.(?:readFileSync|writeFileSync|appendFileSync|readdirSync|statSync|existsSync|mkdirSync|unlinkSync)\b", code) or re.search(
+            r"\b(?:execSync|spawnSync)\s*\(", code
+        ):
+            return report(
+                "MEDIUM", "JS_Sync_IO_Blocking_EventLoop",
+                "API síncrona de fs/child_process dentro de função: bloqueia o event loop single-thread do Node.",
+                "I/O síncrono (`fs.*Sync`) em handlers bloqueia o event loop e derruba o throughput concorrente.",
+                "const { readFile } = require('node:fs/promises');\nconst data = await readFile(path, 'utf8');",
+            )
+
+        # promise/catch-or-return
+        if re.search(r"\.then\s*\(", code) and not re.search(r"\.catch\s*\(|\btry\s*\{", code):
+            return report(
+                "MEDIUM", "JS_Unhandled_Promise_Rejection",
+                "Cadeia .then() sem .catch() nem try/catch: rejeições ficam sem tratamento.",
+                "Promise encadeada sem `.catch()` pode gerar `unhandledRejection` e derrubar o processo Node.",
+                "try {\n  const data = await fetchData();\n} catch (err) {\n  logger.error(err);\n}",
+            )
 
         return None

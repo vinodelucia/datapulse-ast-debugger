@@ -120,9 +120,9 @@ def main() -> None:
         "--languages",
         "-l",
         nargs="+",
-        default=["python", "sql", "r"],
-        choices=["python", "sql", "r"],
-        help="Linguagens monitoradas (padrão: python sql r).",
+        default=["python", "sql", "r", "javascript"],
+        choices=["python", "sql", "r", "javascript"],
+        help="Linguagens monitoradas (padrão: python sql r javascript).",
     )
     arg_parser.add_argument(
         "--memory-dir",

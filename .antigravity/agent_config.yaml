@@ -1,5 +1,5 @@
 name: "DataPulse AST Debugger Auditor"
-version: "1.0.0"
+version: "1.1.0"
 mode: "read-only"
 security_policy:
   allow_code_execution: false
@@ -24,3 +24,5 @@ supported_languages:
   - python
   - sql
   - r
+  - javascript
+  - typescript

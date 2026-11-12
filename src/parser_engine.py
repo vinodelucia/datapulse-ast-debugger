@@ -51,6 +51,32 @@ class MultiLangASTParser:
         ".sql": "sql",
         ".r": "r",
         ".R": "r",
+        ".js": "javascript",
+        ".mjs": "javascript",
+        ".cjs": "javascript",
+        ".jsx": "javascript",
+        ".ts": "javascript",
+        ".tsx": "javascript",
+    }
+
+    # Gramática Tree-sitter usada por extensão (TS/TSX possuem gramáticas próprias)
+    GRAMMAR_BY_EXT = {
+        ".py": "python",
+        ".sql": "sql",
+        ".r": "r",
+        ".R": "r",
+        ".js": "javascript",
+        ".mjs": "javascript",
+        ".cjs": "javascript",
+        ".jsx": "javascript",
+        ".ts": "typescript",
+        ".tsx": "tsx",
+    }
+
+    # Diretórios ignorados na varredura recursiva (dependências, builds e caches)
+    IGNORED_DIRS = {
+        "node_modules", ".git", ".venv", "venv", "__pycache__", "dist", "build",
+        ".next", "coverage", ".datapulse_memory", ".pytest_cache",
     }
 
     # Nós-alvo que definem 'Pontos de Acesso' relevantes para dados em cada gramática
@@ -65,17 +91,24 @@ class MultiLangASTParser:
             "create_table",
         ],
         "r": ["function_definition", "binary_operator", "call", "left_assignment"],
+        "javascript": [
+            "function_declaration",
+            "generator_function_declaration",
+            "method_definition",
+            "variable_declarator",  # filtrado: apenas quando recebe arrow/function expression
+        ],
     }
+
+    JS_FUNCTION_VALUES = {"arrow_function", "function_expression", "function", "generator_function"}
 
     def __init__(self):
         self.parsers: Dict[str, Any] = {}
         if HAS_TREE_SITTER:
-            for ext, lang in self.SUPPORTED_EXTENSIONS.items():
-                if lang not in self.parsers:
-                    try:
-                        self.parsers[lang] = get_parser(lang)
-                    except Exception:
-                        self.parsers[lang] = None
+            for grammar in set(self.GRAMMAR_BY_EXT.values()):
+                try:
+                    self.parsers[grammar] = get_parser(grammar)
+                except Exception:
+                    self.parsers[grammar] = None
 
     def parse_directory_readonly(
         self, directory_path: str, languages: Optional[List[str]] = None
@@ -89,6 +122,11 @@ class MultiLangASTParser:
         all_access_points: List[AccessPoint] = []
 
         for file_path in sorted(base_path.rglob("*")):
+            rel_parts = file_path.relative_to(base_path).parts[:-1]
+            if any(part in self.IGNORED_DIRS for part in rel_parts):
+                continue
+            if file_path.name.endswith((".min.js", ".d.ts")):
+                continue
             if file_path.is_file() and file_path.suffix in self.SUPPORTED_EXTENSIONS:
                 lang = self.SUPPORTED_EXTENSIONS[file_path.suffix]
                 if lang in allowed_langs:
@@ -108,7 +146,7 @@ class MultiLangASTParser:
         with open(path, "rb") as f:
             source_bytes = f.read()
 
-        parser = self.parsers.get(lang)
+        parser = self.parsers.get(self.GRAMMAR_BY_EXT.get(path.suffix, lang))
         if parser is not None:
             tree = parser.parse(source_bytes)
             root_node = tree.root_node
@@ -137,7 +175,12 @@ class MultiLangASTParser:
         """Percorre a árvore sintática recursivamente identificando blocos lógicos."""
         target_types = self.TARGET_NODES.get(lang, [])
 
-        if node.type in target_types:
+        is_target = node.type in target_types
+        if is_target and lang == "javascript" and node.type == "variable_declarator":
+            value = node.child_by_field_name("value")
+            is_target = value is not None and value.type in self.JS_FUNCTION_VALUES
+
+        if is_target:
             start_line = node.start_point[0] + 1
             end_line = node.end_point[0] + 1
             snippet = source_bytes[node.start_byte : node.end_byte].decode(
@@ -164,7 +207,10 @@ class MultiLangASTParser:
 
     def _extract_node_name(self, node: Any, source_bytes: bytes, lang: str, line: int) -> str:
         for child in node.children:
-            if child.type in ("identifier", "name", "table_reference", "object_name"):
+            if child.type in (
+                "identifier", "name", "table_reference", "object_name",
+                "property_identifier", "type_identifier",
+            ):
                 return (
                     source_bytes[child.start_byte : child.end_byte]
                     .decode("utf-8", errors="ignore")
@@ -209,6 +255,43 @@ class MultiLangASTParser:
                 return sorted(results, key=lambda x: x.start_line)
             except SyntaxError:
                 pass
+
+        if lang == "javascript":
+            pattern = re.compile(
+                r"(?m)^[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?"
+                r"(?:function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\("
+                r"|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b[^(]*\(|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>))"
+            )
+            for match in pattern.finditer(text):
+                func_name = match.group(1) or match.group(2)
+                brace_pos = text.find("{", match.end())
+                if brace_pos == -1:
+                    continue
+                depth, end_pos = 0, brace_pos
+                for idx in range(brace_pos, len(text)):
+                    if text[idx] == "{":
+                        depth += 1
+                    elif text[idx] == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end_pos = idx + 1
+                            break
+                snippet = text[match.start():end_pos].strip()
+                start_line = text[: match.start()].count("\n") + 1
+                end_line = start_line + snippet.count("\n")
+                results.append(
+                    AccessPoint(
+                        file_path=file_path,
+                        language=lang,
+                        node_type="function_declaration",
+                        name=func_name,
+                        start_line=start_line,
+                        end_line=end_line,
+                        code_snippet=snippet,
+                        ast_sexp=f"(function_declaration (identifier {func_name}))",
+                    )
+                )
+            return results
 
         if lang == "sql":
             pattern = re.compile(

@@ -55,7 +55,7 @@ def test_local_diagnostic_memory_and_privacy_sanitizer():
 
         # Verifica sanitização de código-fonte e PII no payload global
         payload = memory.prepare_anonymized_global_payload([rec.access_point_id])
-        assert payload["client_version"] == "1.0.0"
+        assert payload["client_version"] == "1.1.0"
         contrib = payload["contributions"][0]
         assert "secret_df" not in str(payload)
         assert "192.168.1.50" not in contrib["abstract_diagnostic"]
@@ -79,3 +79,49 @@ def test_analyzer_agent_end_to_end():
         assert "Pandas_Iterrows_Bottleneck" in categories
         assert "SQL_FullTableScan" in categories
         assert "R_Vectorization_Missing" in categories
+        assert "JS_Eval_Code_Injection" in categories
+        assert "JS_Command_Injection" in categories
+        assert "JS_Sync_IO_Blocking_EventLoop" in categories
+        assert "JS_Unhandled_Promise_Rejection" in categories
+
+
+def test_javascript_typescript_parsing_and_rules():
+    parser = MultiLangASTParser()
+    sample_dir = Path(__file__).parent / "sample_code"
+
+    js_points = parser.parse_file_readonly(str(sample_dir / "insecure_server.js"))
+    ts_points = parser.parse_file_readonly(str(sample_dir / "order_service.ts"))
+
+    js_names = {ap.name for ap in js_points}
+    assert {"loadReport", "archiveFolder", "calculate", "syncProfile", "isValidSlug"} <= js_names
+    assert all(ap.language == "javascript" for ap in js_points + ts_points)
+    ts_names = {ap.name for ap in ts_points}
+    assert {"loadOrders", "syncOrders", "sumTotals"} <= ts_names
+
+    rules = {
+        "calculate": "JS_Eval_Code_Injection",
+        "archiveFolder": "JS_Command_Injection",
+        "findUser": "SQL_Injection_Vulnerability",
+        "loadReport": "JS_Sync_IO_Blocking_EventLoop",
+        "syncProfile": "JS_Unhandled_Promise_Rejection",
+        "isValidSlug": "JS_ReDoS_Unsafe_Regex",
+        "connect": "JS_Hardcoded_Secret",
+    }
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+        memory = LocalDiagnosticMemory(persist_dir=tmp_dir, use_sentence_transformers=False)
+        agent = DataPulseAnalyzerAgent(memory=memory, parser=parser, api_key=None)
+        found = {}
+        for ap in js_points:
+            rec = agent.analyze_access_point(ap, persist_to_memory=False)
+            if rec:
+                found[ap.name] = rec.error_category
+        for fn, category in rules.items():
+            assert found.get(fn) == category, f"{fn}: esperado {category}, obtido {found.get(fn)}"
+
+
+def test_directory_scan_ignores_node_modules(tmp_path):
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "evil.js").write_text("function x(){ eval(a) }")
+    (tmp_path / "app.js").write_text("function ok(){ return 1 }")
+    points = MultiLangASTParser().parse_directory_readonly(str(tmp_path))
+    assert {ap.name for ap in points} == {"ok"}

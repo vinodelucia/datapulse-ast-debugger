@@ -1,8 +1,8 @@
 <div align="center">
 
-# 🛡️ DataPulse AST Debugger v1.0
+# 🛡️ DataPulse AST Debugger v1.1
 ### *Zero-Execution Multi-Language AST Static Debugger & Local RAG Memory*
-**Analisador e debugger estático não-invasivo (100% Read-Only) para Engenharia e Ciência de Dados (Python, SQL e R).**
+**Analisador e debugger estático não-invasivo (100% Read-Only) para Engenharia e Ciência de Dados (Python, SQL, R e JavaScript/TypeScript).**
 
 [![CI/CD Build & Test](https://github.com/vinodelucia/datapulse-ast-debugger/actions/workflows/ci.yml/badge.svg)](https://github.com/vinodelucia/datapulse-ast-debugger/actions/workflows/ci.yml)
 [![Latest Release](https://img.shields.io/github/v/release/vinodelucia/datapulse-ast-debugger?color=38bdf8&label=Release&logo=github)](https://github.com/vinodelucia/datapulse-ast-debugger/releases/latest)
@@ -38,7 +38,7 @@ O **DataPulse AST Debugger** foi projetado sob a filosofia **Zero-Execution & Lo
 5. **Contribuição Global Opt-In & Sanitizada:** Ao encerrar a sessão, você decide se deseja compartilhar apenas hashes matemáticos de AST com a comunidade (com auditoria transparente do JSON e remoção total de código-fonte e PII).
 
 ### ⚡ Principais Diferenciais
-* **Parsing Multilinguagem Unificado (`Tree-sitter`):** Suporte nativo para `.py`, `.sql`, `.r` e `.R`, extraindo nós semânticos reais da árvore sintática com fallback determinístico via stdlib AST.
+* **Parsing Multilinguagem Unificado (`Tree-sitter`):** Suporte nativo para `.py`, `.sql`, `.r`/`.R` e **`.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx` (novo na v1.1)**, extraindo nós semânticos reais da árvore sintática com fallback determinístico via stdlib AST.
 * **Motor Híbrido (Google Gemini 2.5 Pro + Heurística Estática Nativa):** Se a variável `GEMINI_API_KEY` estiver configurada, o orquestrador utiliza `gemini-2.5-pro` com *Structured Outputs* (`Pydantic`) e *Chain-of-Thought*. Caso o usuário esteja 100% offline ou sem chave de API, o sistema aciona automaticamente o **Motor Heurístico Determinístico**, garantindo funcionamento imediato (*plug-and-play*).
 * **Memória Vetorial Persistente (`ChromaDB` + `SQLite`):** Embeddings locais de 384 dimensões (`all-MiniLM-L6-v2` com fallback de hash determinístico) e trilha de auditoria local em SQLite (`audit_sessions.sqlite3`).
 * **Dashboard Bilíngue em Tempo Real:** Interface interativa em Streamlit e Plotly com seletor instantâneo de idioma (`🇺🇸 English` | `🇧🇷 Português`) na barra lateral.
@@ -53,6 +53,10 @@ O **DataPulse AST Debugger** foi projetado sob a filosofia **Zero-Execution & Lo
 | **Python (`.py`)** | `function_definition` | `SQL_Injection_Vulnerability` | Detecta interpolação direta (`f-strings`) em cursores de banco de dados. |
 | **SQL (`.sql`)** | `select`, `create_table_statement`, `cte` | `SQL_FullTableScan` | Identifica `SELECT *` combinado com `CROSS JOIN` ou predicados não-indexáveis (`LIKE '%...'`). |
 | **R (`.r`, `.R`)** | `function_definition`, `left_assignment`, `call` | `R_Vectorization_Missing` | Elimina crescimento iterativo de objetos (`rbind` em loop `for`) com custo $O(N^2)$ de RAM. |
+| **JavaScript/TS (`.js`, `.ts`, `.tsx`)** | `function_declaration`, `method_definition`, arrow functions | `JS_Eval_Code_Injection` / `JS_Command_Injection` | Bloqueia `eval`/`new Function` e `child_process.exec` com entrada dinâmica (inspirado em `eslint-plugin-security`). |
+| **JavaScript/TS** | `function_declaration`, `method_definition` | `JS_Sync_IO_Blocking_EventLoop` | Aponta `fs.*Sync` em handlers que bloqueiam o event loop (inspirado em `eslint-plugin-n`). |
+| **JavaScript/TS** | arrow functions, `method_definition` | `JS_Unhandled_Promise_Rejection` | `.then()` sem `.catch()` / `try` (inspirado em `eslint-plugin-promise`). |
+| **JavaScript/TS** | funções em geral | `JS_ReDoS_Unsafe_Regex` / `JS_Hardcoded_Secret` / `SQL_Injection_Vulnerability` | Regex com quantificadores aninhados, segredos hardcoded e SQL por template literal. |
 
 ### 🏛️ Arquitetura de Alto Nível
 
@@ -114,7 +118,7 @@ Traditional linters only check surface-level formatting or require importing/exe
 5. **Opt-In Anonymized Global Telemetry:** Upon closing a session, you choose whether to contribute abstract AST signatures to the community (with transparent JSON inspection and strict stripping of source code and PII).
 
 ### ⚡ Key Features
-* **Unified Multi-Language AST Engine (`Tree-sitter`):** Native support for `.py`, `.sql`, `.r`, and `.R`, extracting semantic syntax nodes with a deterministic stdlib AST fallback.
+* **Unified Multi-Language AST Engine (`Tree-sitter`):** Native support for `.py`, `.sql`, `.r`/`.R`, and **`.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx` (new in v1.1)**, extracting semantic syntax nodes with a deterministic stdlib AST fallback.
 * **Hybrid AI Engine (Google Gemini 2.5 Pro + Native Static Heuristics):** Automatically connects to `gemini-2.5-pro` via `google-genai` with *Structured Outputs* (`Pydantic`) and *Chain-of-Thought* when `GEMINI_API_KEY` is set. If no API key is provided or you are offline, it seamlessly falls back to a **Zero-Config Deterministic Static Engine**.
 * **Persistent Vector Memory (`ChromaDB` + `SQLite`):** 384-dimensional local embeddings (`all-MiniLM-L6-v2` with deterministic hash fallback) paired with a local SQLite session audit log (`audit_sessions.sqlite3`).
 * **Bilingual Reactive Dashboard:** Built with Streamlit and Plotly featuring a live sidebar toggle (`🇺🇸 English` | `🇧🇷 Português`).
@@ -129,6 +133,10 @@ Traditional linters only check surface-level formatting or require importing/exe
 | **Python (`.py`)** | `function_definition` | `SQL_Injection_Vulnerability` | Detects raw `f-string` / string concatenation inside database cursor calls. |
 | **SQL (`.sql`)** | `select`, `create_table_statement`, `cte` | `SQL_FullTableScan` | Flags `SELECT *` combined with `CROSS JOIN` or non-sargable predicates (`LIKE '%...'`). |
 | **R (`.r`, `.R`)** | `function_definition`, `left_assignment`, `call` | `R_Vectorization_Missing` | Eliminates iterative object growth (`rbind` inside `for` loops) with $O(N^2)$ RAM overhead. |
+| **JavaScript/TS (`.js`, `.ts`, `.tsx`)** | `function_declaration`, `method_definition`, arrow functions | `JS_Eval_Code_Injection` / `JS_Command_Injection` | Flags `eval` / `new Function` and `child_process.exec` with dynamic input (inspired by `eslint-plugin-security`). |
+| **JavaScript/TS** | `function_declaration`, `method_definition` | `JS_Sync_IO_Blocking_EventLoop` | Flags `fs.*Sync` inside handlers that block the event loop (inspired by `eslint-plugin-n`). |
+| **JavaScript/TS** | arrow functions, `method_definition` | `JS_Unhandled_Promise_Rejection` | `.then()` without `.catch()` / `try` (inspired by `eslint-plugin-promise`). |
+| **JavaScript/TS** | any function | `JS_ReDoS_Unsafe_Regex` / `JS_Hardcoded_Secret` / `SQL_Injection_Vulnerability` | Nested-quantifier regex, hardcoded secrets and SQL built via template literals. |
 
 ### 🛠️ Quick Start (From Source)
 ```bash

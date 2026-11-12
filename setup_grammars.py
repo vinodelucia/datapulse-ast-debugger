@@ -5,7 +5,7 @@ from src.parser_engine import HAS_TREE_SITTER, MultiLangASTParser
 
 def verify_grammars() -> bool:
     parser = MultiLangASTParser()
-    supported = ["python", "sql", "r"]
+    supported = ["python", "sql", "r", "javascript", "typescript", "tsx"]
     print("=== DataPulse AST Debugger: Grammar Check ===")
     print(f"Tree-sitter C-bindings available: {HAS_TREE_SITTER}")
 

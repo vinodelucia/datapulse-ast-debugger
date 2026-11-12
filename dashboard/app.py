@@ -122,8 +122,8 @@ with st.sidebar:
     target_dir = st.text_input(t["target_dir"], value="./tests/sample_code")
     lang_filter = st.multiselect(
         t["monitored_langs"],
-        options=["python", "sql", "r"],
-        default=["python", "sql", "r"],
+        options=["python", "sql", "r", "javascript"],
+        default=["python", "sql", "r", "javascript"],
     )
 
     if st.button(t["scan_btn"], use_container_width=True, type="primary"):
