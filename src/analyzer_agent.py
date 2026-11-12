@@ -195,12 +195,14 @@ class DataPulseAnalyzerAgent:
                         "df['net_total'] = df['price'] + df['tax']"
                     ),
                 )
-            if "][" in code and "=" in code:
+            import re
+
+            if re.search(r"(?m)^\s*\w+\[[^\]]+\]\[[^\]]+\]\s*=", code):
                 return DiagnosticReport(
                     has_issue=True,
                     severity="MEDIUM",
                     error_category="Pandas_ChainedIndexing_Warning",
-                    chain_of_thought="Indexação encadeada df[][]=val identificada na árvore sintática.",
+                    chain_of_thought="Indexação encadeada df[][]=val identificada no lado esquerdo de atribuição na árvore sintática.",
                     diagnostic_summary=(
                         "Uso de indexação encadeada `df[][]=val` pode operar sobre cópia temporária e gerar `SettingWithCopyWarning` silencioso."
                         + reincidence_note
@@ -220,6 +222,30 @@ class DataPulseAnalyzerAgent:
                     suggested_fix=(
                         "cursor.execute('SELECT * FROM users WHERE user_id = :uid', {'uid': user_id})"
                     ),
+                )
+            if "shell=True" in code and ("subprocess." in code or "Popen(" in code or "run(" in code):
+                return DiagnosticReport(
+                    has_issue=True,
+                    severity="HIGH",
+                    error_category="Subprocess_Shell_Injection_Risk",
+                    chain_of_thought="Chamada subprocess com shell=True identificada no nó AST.",
+                    diagnostic_summary=(
+                        "Execução de subprocesso com `shell=True` permite injeção de comandos de shell se houver interpolação de variáveis externas."
+                        + reincidence_note
+                    ),
+                    suggested_fix="subprocess.run(['cmd', 'arg1', 'arg2'], shell=False, check=True)",
+                )
+            if re.search(r"except(?:\s+\w+)?\s*:\s*\n\s*pass\b", code) or "except:" in code:
+                return DiagnosticReport(
+                    has_issue=True,
+                    severity="LOW",
+                    error_category="Silent_Exception_Swallowing",
+                    chain_of_thought="Bloco try/except genérico silenciando exceções na AST sem telemetria ou re-raise.",
+                    diagnostic_summary=(
+                        "Captura silenciosa de exceção (`bare except:` ou `except Exception: pass`) oculta falhas de pipeline e dificulta rastreabilidade."
+                        + reincidence_note
+                    ),
+                    suggested_fix="except Exception as exc:\n    logger.warning('Falha controlada na operação: %s', exc)",
                 )
 
         elif ap.language == "sql":
