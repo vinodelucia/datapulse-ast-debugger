@@ -24,6 +24,7 @@ def run_cli_audit(
     memory_dir: str,
     output_format: str = "markdown",
     fast_embeddings: bool = False,
+    allow_llm: bool = False,
 ) -> int:
     target = Path(target_path).resolve()
     if not target.exists():
@@ -35,7 +36,7 @@ def run_cli_audit(
         use_sentence_transformers=not fast_embeddings,
     )
     parser = MultiLangASTParser()
-    agent = DataPulseAnalyzerAgent(memory=memory, parser=parser)
+    agent = DataPulseAnalyzerAgent(memory=memory, parser=parser, allow_llm=allow_llm)
 
     if target.is_file():
         access_points = parser.parse_file_readonly(str(target))
@@ -143,6 +144,13 @@ def main() -> None:
         help="Usa embedding determinístico instantâneo sem carregar pesos do SentenceTransformer.",
     )
 
+    arg_parser.add_argument(
+        "--allow-llm",
+        action="store_true",
+        help="Opt-in: envia o código (com segredos/PII redigidos) ao Gemini se GEMINI_API_KEY estiver definida. "
+        "Por padrão nada sai da sua máquina.",
+    )
+
     args = arg_parser.parse_args()
     sys.exit(
         run_cli_audit(
@@ -151,6 +159,7 @@ def main() -> None:
             memory_dir=args.memory_dir,
             output_format=args.format,
             fast_embeddings=args.fast_embeddings,
+            allow_llm=args.allow_llm,
         )
     )
 

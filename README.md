@@ -154,6 +154,12 @@ python -m pytest -v
 
 ---
 
+## 🔒 Privacidade & Qualidade das Regras / Privacy & Rule Quality
+
+* **PT:** Nada sai da sua máquina por padrão. O envio de código ao Gemini exige opt-in explícito (`--allow-llm` ou `DATAPULSE_ALLOW_LLM=1`) e o trecho é enviado com segredos/PII redigidos. Segredos também são redigidos antes de serem gravados em `.datapulse_memory`. O `ast_hash` é uma assinatura **estrutural** (apenas tipos de nós, sem nomes nem literais). Regras rodam sem casar em comentários, a de maior severidade vence, e `datapulse: ignore` dentro do trecho suprime os achados daquele ponto.
+* **EN:** Nothing leaves your machine by default. Sending code to Gemini requires explicit opt-in (`--allow-llm` or `DATAPULSE_ALLOW_LLM=1`) and the snippet is sent with secrets/PII redacted. Secrets are also redacted before being written to `.datapulse_memory`. `ast_hash` is a **structural** signature (node types only, no names or literals). Rules ignore comments, the highest severity wins, and a `datapulse: ignore` marker inside a snippet suppresses its findings.
+
+---
 ## 📂 Arquitetura do Projeto / Project Structure
 
 ```text

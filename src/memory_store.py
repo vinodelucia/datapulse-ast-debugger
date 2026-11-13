@@ -1,5 +1,6 @@
 import datetime
 import hashlib
+import json
 import sqlite3
 import uuid
 from pathlib import Path
@@ -9,6 +10,26 @@ import chromadb
 import requests
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 from pydantic import BaseModel, Field
+
+from src.privacy import redact_sensitive, sanitize_category, sanitize_summary
+
+MAX_EMBED_CHARS = 2000  # trunca o texto embutido (custo de embedding e ruído)
+
+_ST_FN_CACHE: Dict[str, Any] = {}
+
+
+def _get_sentence_transformer_fn() -> Optional[Any]:
+    """Carrega o modelo all-MiniLM-L6-v2 uma única vez por processo (None se indisponível)."""
+    if "fn" not in _ST_FN_CACHE:
+        try:
+            from chromadb.utils import embedding_functions
+
+            _ST_FN_CACHE["fn"] = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name="all-MiniLM-L6-v2"
+            )
+        except Exception:
+            _ST_FN_CACHE["fn"] = None
+    return _ST_FN_CACHE["fn"]
 
 
 class DeterministicHashEmbeddingFunction(EmbeddingFunction[Documents]):
@@ -86,15 +107,12 @@ class LocalDiagnosticMemory:
         self._init_sqlite_audit()
 
     def _init_embedding_function(self, use_sentence_transformers: bool) -> Any:
+        self.semantic = False
         if use_sentence_transformers:
-            try:
-                from chromadb.utils import embedding_functions
-
-                return embedding_functions.SentenceTransformerEmbeddingFunction(
-                    model_name="all-MiniLM-L6-v2"
-                )
-            except Exception:
-                pass
+            fn = _get_sentence_transformer_fn()
+            if fn is not None:
+                self.semantic = True
+                return fn
         return DeterministicHashEmbeddingFunction()
 
     def _init_sqlite_audit(self) -> None:
@@ -125,10 +143,15 @@ class LocalDiagnosticMemory:
 
     def save_diagnostic(self, record: DiagnosticRecord) -> int:
         """Armazena o diagnóstico localmente vinculando-o ao ponto de acesso do código."""
+        # Segredos/PII nunca são persistidos em claro na memória local
+        original_code = redact_sensitive(record.original_code)
+        suggested_fix = redact_sensitive(record.suggested_fix)
+        summary = redact_sensitive(record.diagnostic_summary)
+
         searchable_text = (
             f"Language: {record.language} | Category: {record.error_category}\n"
-            f"Summary: {record.diagnostic_summary}\n"
-            f"Code Structure:\n{record.original_code}"
+            f"Summary: {summary}\n"
+            f"Code Structure:\n{original_code[:MAX_EMBED_CHARS]}"
         )
 
         # Verifica se o mesmo ponto de acesso já apresentou problemas antes
@@ -150,9 +173,9 @@ class LocalDiagnosticMemory:
                     "ast_hash": record.ast_hash,
                     "severity": record.severity,
                     "error_category": record.error_category,
-                    "diagnostic_summary": record.diagnostic_summary,
-                    "original_code": record.original_code,
-                    "suggested_fix": record.suggested_fix,
+                    "diagnostic_summary": summary,
+                    "original_code": original_code,
+                    "suggested_fix": suggested_fix,
                     "recurrence_count": recurrence,
                     "timestamp": record.timestamp,
                     "shared_globally": False,
@@ -209,14 +232,16 @@ class LocalDiagnosticMemory:
         contributions: List[Dict[str, str]] = []
 
         for meta in records.get("metadatas", []) or []:
+            if not all(k in meta for k in ("language", "ast_hash", "error_category", "severity")):
+                continue  # registro incompleto/corrompido: nunca enviar
             contributions.append(
                 {
                     "language": str(meta["language"]),
                     "ast_pattern_hash": str(meta["ast_hash"]),
-                    "error_category": str(meta["error_category"]),
+                    "error_category": sanitize_category(str(meta["error_category"])),
                     "severity": str(meta["severity"]),
-                    "abstract_diagnostic": self._sanitize_pii(str(meta["diagnostic_summary"])),
-                    "abstract_solution": " Padrão estrutural refatorado (código-fonte omitido por privacidade).",
+                    "abstract_diagnostic": sanitize_summary(str(meta.get("diagnostic_summary", ""))),
+                    "abstract_solution": "Padrão estrutural refatorado (código-fonte omitido por privacidade).",
                 }
             )
 
@@ -227,19 +252,22 @@ class LocalDiagnosticMemory:
 
     @staticmethod
     def _sanitize_pii(text: str) -> str:
-        """Remove caminhos de diretórios locais, IPs ou possíveis segredos do texto de resumo."""
-        import re
-
-        sanitized = re.sub(r"[A-Za-z]:\\[\\\S|*\S]?.*", "[REDACTED_PATH]", text)
-        sanitized = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "[REDACTED_IP]", sanitized)
-        return sanitized
+        """Remove caminhos locais, e-mails, IPs e segredos do texto (ver src/privacy.py)."""
+        return redact_sensitive(text)
 
     def submit_opt_in_telemetry(
         self, selected_ids: List[str], dry_run: bool = False
     ) -> Dict[str, Any]:
         """Envia o pacote anonimizado mediante autorização explícita do usuário."""
         payload = self.prepare_anonymized_global_payload(selected_ids)
-        self.log_audit_event("OPT_IN_TELEMETRY_AUTHORIZED", f"count={len(selected_ids)}", "INFO")
+        payload_digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:16]
+        self.log_audit_event(
+            "OPT_IN_TELEMETRY_AUTHORIZED",
+            f"count={len(payload['contributions'])};payload_sha256={payload_digest}",
+            "INFO",
+        )
 
         if dry_run:
             return {"status": "dry_run_success", "payload": payload}
@@ -250,14 +278,17 @@ class LocalDiagnosticMemory:
                 json=payload,
                 timeout=5,
             )
+            response.raise_for_status()
             return {
                 "status": "sent",
                 "http_status": response.status_code,
                 "payload": payload,
             }
-        except requests.RequestException:
-            # Em ambiente offline/demo, registra localmente e retorna confirmação do pacote preparado
+        except requests.RequestException as exc:
+            # Nada é enviado nem enfileirado: o status reflete a falha de forma honesta
+            self.log_audit_event("TELEMETRY_SEND_FAILED", type(exc).__name__, "WARNING")
             return {
-                "status": "queued_offline",
+                "status": "failed",
+                "error": type(exc).__name__,
                 "payload": payload,
             }

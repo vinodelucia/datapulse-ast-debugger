@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from typing import Any, Dict, List, Literal, Optional
 
@@ -6,6 +7,8 @@ from pydantic import BaseModel, Field
 
 from src.memory_store import DiagnosticRecord, LocalDiagnosticMemory
 from src.parser_engine import AccessPoint, MultiLangASTParser
+from src.privacy import redact_sensitive
+from src.rules import evaluate
 
 try:
     from google import genai
@@ -15,6 +18,8 @@ try:
 except Exception:
     HAS_GENAI = False
 
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """Você é o Motor de Diagnóstico Estático do DataPulse. Sua função é analisar blocos de código (Python, SQL, R, JavaScript/TypeScript) extraídos via AST, juntamente com suas árvores sintáticas e histórico de memória vetorial.
 
@@ -49,7 +54,10 @@ class DiagnosticReport(BaseModel):
 
 
 class DataPulseAnalyzerAgent:
-    """Orquestrador Antigravity: une MultiLangASTParser, RAG no ChromaDB e Google GenAI (gemini-2.5-pro)."""
+    """Orquestrador Antigravity: une MultiLangASTParser, RAG no ChromaDB e Google GenAI (opt-in)."""
+
+    # Reincidência semântica só conta se o caso for muito próximo (ou tiver o mesmo ast_hash)
+    SIMILARITY_THRESHOLD = 0.5
 
     def __init__(
         self,
@@ -57,6 +65,7 @@ class DataPulseAnalyzerAgent:
         parser: Optional[MultiLangASTParser] = None,
         model_name: str = "gemini-2.5-pro",
         api_key: Optional[str] = None,
+        allow_llm: Optional[bool] = None,
     ):
         self.memory = memory or LocalDiagnosticMemory()
         self.parser = parser or MultiLangASTParser()
@@ -64,21 +73,28 @@ class DataPulseAnalyzerAgent:
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY")
         self.client = None
 
-        if HAS_GENAI and self.api_key:
+        # O código só sai da máquina rumo ao LLM com opt-in explícito (flag ou DATAPULSE_ALLOW_LLM=1)
+        if allow_llm is None:
+            allow_llm = os.environ.get("DATAPULSE_ALLOW_LLM", "").lower() in ("1", "true", "yes")
+        self.allow_llm = bool(allow_llm)
+
+        if self.allow_llm and HAS_GENAI and self.api_key:
             try:
                 self.client = genai.Client(api_key=self.api_key)
-            except Exception:
+            except Exception as exc:
+                logger.warning("Falha ao iniciar cliente Gemini; usando motor heurístico: %s", exc)
                 self.client = None
 
     def analyze_access_point(
         self, ap: AccessPoint, persist_to_memory: bool = True
     ) -> Optional[DiagnosticRecord]:
-        """Executa RAG local + análise estática (LLM ou motor heurístico AST) sobre um AccessPoint."""
+        """Executa RAG local + análise estática (LLM opt-in ou regras AST) sobre um AccessPoint."""
         similar_cases = self.memory.retrieve_similar_past_issues(
             code_snippet=ap.code_snippet,
             language=ap.language,
             top_k=3,
         )
+        similar_cases = self._filter_true_recurrences(similar_cases, ap)
 
         report = self._invoke_llm_or_heuristic(ap, similar_cases)
         if not report or not report.has_issue:
@@ -116,10 +132,23 @@ class DataPulseAnalyzerAgent:
 
         return diagnostics
 
+    def _filter_true_recurrences(
+        self, similar_cases: List[Dict[str, Any]], ap: AccessPoint
+    ) -> List[Dict[str, Any]]:
+        """Mantém só casos realmente recorrentes: mesmo ast_hash ou distância semântica baixa."""
+        semantic = getattr(self.memory, "semantic", False)
+        kept = []
+        for case in similar_cases:
+            same_hash = case.get("metadata", {}).get("ast_hash") == ap.ast_hash
+            close = semantic and case.get("similarity_distance", 9.9) < self.SIMILARITY_THRESHOLD
+            if same_hash or close:
+                kept.append(case)
+        return kept
+
     def _invoke_llm_or_heuristic(
         self, ap: AccessPoint, similar_cases: List[Dict[str, Any]]
     ) -> Optional[DiagnosticReport]:
-        """Chama o Gemini 2.5 Pro com Structured Outputs ou utiliza motor estático determinístico."""
+        """Usa o Gemini (opt-in, código redigido) com Structured Outputs; senão, as regras estáticas."""
         if self.client is not None:
             try:
                 rag_context = self._format_rag_context(similar_cases)
@@ -128,10 +157,10 @@ class DataPulseAnalyzerAgent:
                     f"- ID: `{ap.access_id}`\n"
                     f"- Linguagem: `{ap.language}`\n"
                     f"- Tipo de Nó AST: `{ap.node_type}`\n"
-                    f"- Linhas: {ap.start_line} a {ap.end_line}\n"
-                    f"- S-Expression AST:\n```\n{ap.ast_sexp[:1500]}\n```\n\n"
+                    f"- Linhas: {ap.start_line} a {ap.end_line}\n\n"
                     f"### Casos Similares da Memória Local (RAG)\n{rag_context}\n\n"
-                    f"### Código-Fonte Original (Read-Only)\n```{ap.language}\n{ap.code_snippet}\n```"
+                    f"### Código-Fonte Original (Read-Only, segredos/PII redigidos)\n"
+                    f"```{ap.language}\n{redact_sensitive(ap.code_snippet)}\n```"
                 )
 
                 response = self.client.models.generate_content(
@@ -147,8 +176,10 @@ class DataPulseAnalyzerAgent:
                 if response and response.text:
                     data = json.loads(response.text)
                     return DiagnosticReport(**data)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Falha na análise via LLM em %s; usando regras estáticas: %s", ap.access_id, exc
+                )
 
         return self._static_heuristic_diagnosis(ap, similar_cases)
 
@@ -170,213 +201,20 @@ class DataPulseAnalyzerAgent:
     def _static_heuristic_diagnosis(
         self, ap: AccessPoint, similar_cases: List[Dict[str, Any]]
     ) -> Optional[DiagnosticReport]:
-        """Motor de análise estática determinístico para execução offline/testes sem chave de API."""
-        code = ap.code_snippet
-        reincidence_note = (
-            f" [Reincidência detectada no RAG: {len(similar_cases)} caso(s) similar(es) na memória]."
+        """Regras estáticas determinísticas (offline); vence a de maior severidade."""
+        rule = evaluate(ap.language, ap.code_snippet)
+        if rule is None:
+            return None
+        note = (
+            f" [Reincidência detectada no RAG: {len(similar_cases)} caso(s) recorrente(s) na memória]."
             if similar_cases
             else ""
         )
-
-        if ap.language == "python":
-            if ".iterrows()" in code:
-                return DiagnosticReport(
-                    has_issue=True,
-                    severity="HIGH",
-                    error_category="Pandas_Iterrows_Bottleneck",
-                    chain_of_thought="O nó AST contém iteração linha a linha via .iterrows() em DataFrame, causando boxing/unboxing de Series a cada linha.",
-                    diagnostic_summary=(
-                        "Loop explícito com `.iterrows()` detectado em DataFrame. Causa degradação severa de CPU e alocação desnecessária de memória."
-                        + reincidence_note
-                    ),
-                    suggested_fix=(
-                        "# Substituir loop .iterrows() por operação vetorizada C-level:\n"
-                        "df['tax'] = df['price'] * 0.15\n"
-                        "df['net_total'] = df['price'] + df['tax']"
-                    ),
-                )
-            import re
-
-            if re.search(r"(?m)^\s*\w+\[[^\]]+\]\[[^\]]+\]\s*=", code):
-                return DiagnosticReport(
-                    has_issue=True,
-                    severity="MEDIUM",
-                    error_category="Pandas_ChainedIndexing_Warning",
-                    chain_of_thought="Indexação encadeada df[][]=val identificada no lado esquerdo de atribuição na árvore sintática.",
-                    diagnostic_summary=(
-                        "Uso de indexação encadeada `df[][]=val` pode operar sobre cópia temporária e gerar `SettingWithCopyWarning` silencioso."
-                        + reincidence_note
-                    ),
-                    suggested_fix="df.loc[df['status'] == 'ACTIVE', 'discount'] = 0.10",
-                )
-            if "f\"SELECT" in code or "f'SELECT" in code or "+ user_" in code:
-                return DiagnosticReport(
-                    has_issue=True,
-                    severity="CRITICAL",
-                    error_category="SQL_Injection_Vulnerability",
-                    chain_of_thought="Interpolação direta de string em query SQL dentro de função Python.",
-                    diagnostic_summary=(
-                        "Construção de query SQL via f-string/concatenação expõe o pipeline a SQL Injection crítico."
-                        + reincidence_note
-                    ),
-                    suggested_fix=(
-                        "cursor.execute('SELECT * FROM users WHERE user_id = :uid', {'uid': user_id})"
-                    ),
-                )
-            if "shell=True" in code and ("subprocess." in code or "Popen(" in code or "run(" in code):
-                return DiagnosticReport(
-                    has_issue=True,
-                    severity="HIGH",
-                    error_category="Subprocess_Shell_Injection_Risk",
-                    chain_of_thought="Chamada subprocess com shell=True identificada no nó AST.",
-                    diagnostic_summary=(
-                        "Execução de subprocesso com `shell=True` permite injeção de comandos de shell se houver interpolação de variáveis externas."
-                        + reincidence_note
-                    ),
-                    suggested_fix="subprocess.run(['cmd', 'arg1', 'arg2'], shell=False, check=True)",
-                )
-            if re.search(r"except(?:\s+\w+)?\s*:\s*\n\s*pass\b", code) or "except:" in code:
-                return DiagnosticReport(
-                    has_issue=True,
-                    severity="LOW",
-                    error_category="Silent_Exception_Swallowing",
-                    chain_of_thought="Bloco try/except genérico silenciando exceções na AST sem telemetria ou re-raise.",
-                    diagnostic_summary=(
-                        "Captura silenciosa de exceção (`bare except:` ou `except Exception: pass`) oculta falhas de pipeline e dificulta rastreabilidade."
-                        + reincidence_note
-                    ),
-                    suggested_fix="except Exception as exc:\n    logger.warning('Falha controlada na operação: %s', exc)",
-                )
-
-        elif ap.language == "sql":
-            upper_code = code.upper()
-            if "SELECT *" in upper_code and ("CROSS JOIN" in upper_code or "WHERE" not in upper_code or "LIKE '%" in upper_code):
-                return DiagnosticReport(
-                    has_issue=True,
-                    severity="CRITICAL" if "CROSS JOIN" in upper_code else "HIGH",
-                    error_category="SQL_FullTableScan",
-                    chain_of_thought="Query utiliza SELECT * combinado com predicado não-sargable (LIKE '%...') ou ausência de partição/índice.",
-                    diagnostic_summary=(
-                        "Projeção `SELECT *` com filtro leading-wildcard (`LIKE '%...'`) ou `CROSS JOIN` força Full Table Scan e alto custo de I/O."
-                        + reincidence_note
-                    ),
-                    suggested_fix=(
-                        "SELECT order_id, customer_id, order_total, created_at\n"
-                        "FROM analytics.fact_orders\n"
-                        "WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'\n"
-                        "  AND status = 'COMPLETED';"
-                    ),
-                )
-
-        elif ap.language == "r":
-            if "for (" in code or "for(" in code or "rbind(" in code:
-                return DiagnosticReport(
-                    has_issue=True,
-                    severity="HIGH",
-                    error_category="R_Vectorization_Missing",
-                    chain_of_thought="Crescimento iterativo de objeto ou loop explícito em R copiando vetor em memória a cada iteração.",
-                    diagnostic_summary=(
-                        "Loop `for` com realocação incremental (`rbind` / indexação sequencial) em R gera complexidade quadrática O(N²) de memória."
-                        + reincidence_note
-                    ),
-                    suggested_fix=(
-                        "normalize_metrics <- function(df) {\n"
-                        "  df$z_score <- (df$value - mean(df$value, na.rm = TRUE)) / sd(df$value, na.rm = TRUE)\n"
-                        "  return(df)\n"
-                        "}"
-                    ),
-                )
-
-        elif ap.language == "javascript":
-            return self._javascript_heuristic_diagnosis(code, reincidence_note)
-
-        return None
-
-    @staticmethod
-    def _javascript_heuristic_diagnosis(
-        code: str, reincidence_note: str
-    ) -> Optional[DiagnosticReport]:
-        """Heurísticas JS/TS/Node inspiradas em eslint-plugin-security, eslint-plugin-n e eslint-plugin-promise."""
-        import re
-
-        def report(sev: str, cat: str, cot: str, summary: str, fix: str) -> DiagnosticReport:
-            return DiagnosticReport(
-                has_issue=True,
-                severity=sev,
-                error_category=cat,
-                chain_of_thought=cot,
-                diagnostic_summary=summary + reincidence_note,
-                suggested_fix=fix,
-            )
-
-        # security/detect-eval-with-expression
-        if re.search(r"\beval\s*\(|\bnew\s+Function\s*\(", code):
-            return report(
-                "CRITICAL", "JS_Eval_Code_Injection",
-                "Chamada a eval()/new Function() identificada na AST; qualquer entrada externa vira execução arbitrária.",
-                "Uso de `eval()` / `new Function()` permite execução arbitrária de código (Code Injection).",
-                "const result = JSON.parse(input); // ou lookup em tabela de funções permitidas",
-            )
-
-        # security/detect-child-process (+ interpolação)
-        if re.search(r"\b(?:exec|execSync)\s*\(\s*(?:`[^`]*\$\{|[^)]*['\"]\s*\+)", code):
-            return report(
-                "CRITICAL", "JS_Command_Injection",
-                "child_process.exec com string interpolada/concatenada: o shell interpreta a entrada.",
-                "`child_process.exec` com template literal ou concatenação permite injeção de comandos de shell.",
-                "const { execFile } = require('node:child_process');\nexecFile('git', ['log', '--', userPath], cb);",
-            )
-
-        # SQL injection via template literal / concatenação
-        if re.search(r"`\s*(?:SELECT|INSERT|UPDATE|DELETE)\b[^`]*\$\{", code, re.IGNORECASE) or re.search(
-            r"['\"]\s*(?:SELECT|INSERT|UPDATE|DELETE)\b[^'\"]*['\"]\s*\+", code, re.IGNORECASE
-        ):
-            return report(
-                "CRITICAL", "SQL_Injection_Vulnerability",
-                "Query SQL montada via template literal/concatenação com valor dinâmico.",
-                "Construção de query SQL por interpolação em JavaScript expõe a aplicação a SQL Injection.",
-                "const { rows } = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);",
-            )
-
-        # Segredos hardcoded
-        if re.search(
-            r"(?i)\b(?:password|passwd|secret|api[_-]?key|token|private[_-]?key)\w*\s*[:=]\s*['\"][^'\"\s]{8,}['\"]",
-            code,
-        ):
-            return report(
-                "HIGH", "JS_Hardcoded_Secret",
-                "Literal com nome de credencial atribuído diretamente no código-fonte.",
-                "Credencial/segredo hardcoded no código-fonte pode vazar via repositório ou bundle.",
-                "const apiKey = process.env.API_KEY; // carregue de variável de ambiente / secret manager",
-            )
-
-        # security/detect-unsafe-regex + detect-non-literal-regexp
-        if re.search(r"\((?:[^()\s]*)[+*]\)[+*?{]", code) or re.search(r"new\s+RegExp\(\s*[A-Za-z_$]", code):
-            return report(
-                "HIGH", "JS_ReDoS_Unsafe_Regex",
-                "Regex com quantificador aninhado ou construída a partir de variável: risco de backtracking catastrófico.",
-                "Expressão regular vulnerável a ReDoS (quantificadores aninhados / RegExp não-literal) pode travar o event loop.",
-                "const safe = /^[a-z0-9]+$/i; // evite grupos aninhados com + ou *; valide/escape entradas dinâmicas",
-            )
-
-        # n/no-sync
-        if re.search(r"\b(?:fs|fsp)\.(?:readFileSync|writeFileSync|appendFileSync|readdirSync|statSync|existsSync|mkdirSync|unlinkSync)\b", code) or re.search(
-            r"\b(?:execSync|spawnSync)\s*\(", code
-        ):
-            return report(
-                "MEDIUM", "JS_Sync_IO_Blocking_EventLoop",
-                "API síncrona de fs/child_process dentro de função: bloqueia o event loop single-thread do Node.",
-                "I/O síncrono (`fs.*Sync`) em handlers bloqueia o event loop e derruba o throughput concorrente.",
-                "const { readFile } = require('node:fs/promises');\nconst data = await readFile(path, 'utf8');",
-            )
-
-        # promise/catch-or-return
-        if re.search(r"\.then\s*\(", code) and not re.search(r"\.catch\s*\(|\btry\s*\{", code):
-            return report(
-                "MEDIUM", "JS_Unhandled_Promise_Rejection",
-                "Cadeia .then() sem .catch() nem try/catch: rejeições ficam sem tratamento.",
-                "Promise encadeada sem `.catch()` pode gerar `unhandledRejection` e derrubar o processo Node.",
-                "try {\n  const data = await fetchData();\n} catch (err) {\n  logger.error(err);\n}",
-            )
-
-        return None
+        return DiagnosticReport(
+            has_issue=True,
+            severity=rule.severity,
+            error_category=rule.category,
+            chain_of_thought=rule.chain_of_thought,
+            diagnostic_summary=rule.summary + note,
+            suggested_fix=rule.fix,
+        )

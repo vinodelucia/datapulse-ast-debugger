@@ -1,5 +1,6 @@
 import ast
 import hashlib
+import os
 import re
 import warnings
 from pathlib import Path
@@ -36,7 +37,9 @@ class AccessPoint:
         self.end_line = end_line
         self.code_snippet = code_snippet
         self.ast_sexp = ast_sexp
-        self.access_id = f"{language}:{Path(file_path).name}:{name}:L{start_line}-L{end_line}"
+        parent = Path(file_path).parent.name
+        short_path = f"{parent}/{Path(file_path).name}" if parent else Path(file_path).name
+        self.access_id = f"{language}:{short_path}:{name}:L{start_line}-L{end_line}"
         self.ast_hash = hashlib.sha256(ast_sexp.encode("utf-8")).hexdigest()
 
     def to_dict(self) -> Dict[str, Any]:
@@ -81,7 +84,7 @@ class MultiLangASTParser:
 
     # Nós-alvo que definem 'Pontos de Acesso' relevantes para dados em cada gramática
     TARGET_NODES = {
-        "python": ["function_definition", "class_definition", "with_statement"],
+        "python": ["function_definition"],  # classes/with analisados via seus métodos (evita duplicatas)
         "sql": [
             "select",
             "statement",
@@ -90,7 +93,8 @@ class MultiLangASTParser:
             "select_statement",
             "create_table",
         ],
-        "r": ["function_definition", "binary_operator", "call", "left_assignment"],
+        # R: apenas atribuições cujo valor é uma função (evita milhares de nós call/operator)
+        "r": ["binary_operator", "left_assignment"],
         "javascript": [
             "function_declaration",
             "generator_function_declaration",
@@ -100,6 +104,7 @@ class MultiLangASTParser:
     }
 
     JS_FUNCTION_VALUES = {"arrow_function", "function_expression", "function", "generator_function"}
+    MAX_FILE_BYTES = 2_000_000  # arquivos maiores (bundles/dumps) são ignorados
 
     def __init__(self):
         self.parsers: Dict[str, Any] = {}
@@ -121,32 +126,45 @@ class MultiLangASTParser:
         allowed_langs = set(languages) if languages else set(self.SUPPORTED_EXTENSIONS.values())
         all_access_points: List[AccessPoint] = []
 
-        for file_path in sorted(base_path.rglob("*")):
-            rel_parts = file_path.relative_to(base_path).parts[:-1]
-            if any(part in self.IGNORED_DIRS for part in rel_parts):
-                continue
-            if file_path.name.endswith((".min.js", ".d.ts")):
-                continue
-            if file_path.is_file() and file_path.suffix in self.SUPPORTED_EXTENSIONS:
-                lang = self.SUPPORTED_EXTENSIONS[file_path.suffix]
-                if lang in allowed_langs:
+        for root, dirs, files in os.walk(base_path):
+            dirs[:] = sorted(d for d in dirs if d not in self.IGNORED_DIRS)
+            for name in sorted(files):
+                if name.endswith((".min.js", ".d.ts")):
+                    continue
+                file_path = Path(root) / name
+                ext = self._normalized_suffix(file_path)
+                if ext is None:
+                    continue
+                if self.SUPPORTED_EXTENSIONS[ext] in allowed_langs:
                     all_access_points.extend(self.parse_file_readonly(str(file_path)))
 
         return all_access_points
 
+    def _normalized_suffix(self, path: Path) -> Optional[str]:
+        """Retorna a extensão suportada (case-insensitive), ou None."""
+        if path.suffix in self.SUPPORTED_EXTENSIONS:
+            return path.suffix
+        lowered = path.suffix.lower()
+        return lowered if lowered in self.SUPPORTED_EXTENSIONS else None
+
     def parse_file_readonly(self, file_path: str) -> List[AccessPoint]:
         """Lê o arquivo em modo estritamente read-only e extrai pontos de acesso."""
         path = Path(file_path)
-        if not path.exists() or path.suffix not in self.SUPPORTED_EXTENSIONS:
+        ext = self._normalized_suffix(path) if path.exists() else None
+        if ext is None:
             return []
 
-        lang = self.SUPPORTED_EXTENSIONS[path.suffix]
+        lang = self.SUPPORTED_EXTENSIONS[ext]
 
         # Leitura binária segura sem avaliação/importação do código
+        if path.stat().st_size > self.MAX_FILE_BYTES:
+            return []
         with open(path, "rb") as f:
             source_bytes = f.read()
+        if source_bytes.startswith(b"\xef\xbb\xbf"):  # remove BOM UTF-8
+            source_bytes = source_bytes[3:]
 
-        parser = self.parsers.get(self.GRAMMAR_BY_EXT.get(path.suffix, lang))
+        parser = self.parsers.get(self.GRAMMAR_BY_EXT.get(ext, lang))
         if parser is not None:
             tree = parser.parse(source_bytes)
             root_node = tree.root_node
@@ -172,38 +190,64 @@ class MultiLangASTParser:
         lang: str,
         results: List[AccessPoint],
     ) -> None:
-        """Percorre a árvore sintática recursivamente identificando blocos lógicos."""
+        """Percorre a AST de forma iterativa (sem recursão) identificando blocos lógicos."""
         target_types = self.TARGET_NODES.get(lang, [])
+        seen_ranges = set()
+        stack = [node]
 
-        is_target = node.type in target_types
-        if is_target and lang == "javascript" and node.type == "variable_declarator":
+        while stack:
+            current = stack.pop()
+            if self._is_access_point_node(current, lang, target_types):
+                start_line = current.start_point[0] + 1
+                end_line = current.end_point[0] + 1
+                key = (start_line, end_line)
+                if key not in seen_ranges:  # statement/select com mesmo intervalo = 1 ponto
+                    seen_ranges.add(key)
+                    snippet = source_bytes[current.start_byte : current.end_byte].decode(
+                        "utf-8", errors="replace"
+                    )
+                    node_name = self._extract_node_name(current, source_bytes, lang, start_line)
+                    results.append(
+                        AccessPoint(
+                            file_path=file_path,
+                            language=lang,
+                            node_type=current.type,
+                            name=node_name,
+                            start_line=start_line,
+                            end_line=end_line,
+                            code_snippet=snippet,
+                            ast_sexp=self._structural_signature(current),
+                        )
+                    )
+            stack.extend(reversed(current.children))
+
+        results.sort(key=lambda ap: (ap.start_line, ap.end_line))
+
+    def _is_access_point_node(self, node: Any, lang: str, target_types: List[str]) -> bool:
+        if node.type not in target_types:
+            return False
+        if lang == "javascript" and node.type == "variable_declarator":
             value = node.child_by_field_name("value")
-            is_target = value is not None and value.type in self.JS_FUNCTION_VALUES
+            return value is not None and value.type in self.JS_FUNCTION_VALUES
+        if lang == "r":
+            return any(child.type == "function_definition" for child in node.children)
+        return True
 
-        if is_target:
-            start_line = node.start_point[0] + 1
-            end_line = node.end_point[0] + 1
-            snippet = source_bytes[node.start_byte : node.end_byte].decode(
-                "utf-8", errors="replace"
-            )
+    @staticmethod
+    def _structural_signature(node: Any) -> str:
+        """Assinatura estrutural SEM texto do código (apenas tipos de nós e profundidade).
 
-            node_name = self._extract_node_name(node, source_bytes, lang, start_line)
-            ast_sexp = node.sexp() if hasattr(node, "sexp") else f"({node.type} {node_name})"
-
-            ap = AccessPoint(
-                file_path=file_path,
-                language=lang,
-                node_type=node.type,
-                name=node_name,
-                start_line=start_line,
-                end_line=end_line,
-                code_snippet=snippet,
-                ast_sexp=ast_sexp,
-            )
-            results.append(ap)
-
-        for child in node.children:
-            self._traverse_ast(child, source_bytes, file_path, lang, results)
+        Evita vazar nomes/literais no hash enviado na telemetria e independe de node.sexp().
+        """
+        parts: List[str] = []
+        stack = [(node, 0)]
+        while stack:
+            current, depth = stack.pop()
+            if current.is_named:
+                parts.append(f"{depth}:{current.type}")
+            for child in reversed(current.children):
+                stack.append((child, depth + 1))
+        return "|".join(parts)
 
     def _extract_node_name(self, node: Any, source_bytes: bytes, lang: str, line: int) -> str:
         for child in node.children:
@@ -230,7 +274,7 @@ class MultiLangASTParser:
             try:
                 tree = ast.parse(text)
                 for node in ast.walk(tree):
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         start_line = node.lineno
                         end_line = getattr(node, "end_lineno", start_line) or start_line
                         snippet = "\n".join(lines[start_line - 1 : end_line])
@@ -239,7 +283,9 @@ class MultiLangASTParser:
                             if isinstance(node, ast.ClassDef)
                             else "function_definition"
                         )
-                        sexp = ast.dump(node, include_attributes=False)
+                        sexp = "|".join(
+                            f"{type(n).__name__}" for n in ast.walk(node)
+                        )  # apenas tipos de nós, sem nomes/literais
                         results.append(
                             AccessPoint(
                                 file_path=file_path,
@@ -288,7 +334,7 @@ class MultiLangASTParser:
                         start_line=start_line,
                         end_line=end_line,
                         code_snippet=snippet,
-                        ast_sexp=f"(function_declaration (identifier {func_name}))",
+                        ast_sexp=f"(function_declaration len={len(snippet) // 20})",
                     )
                 )
             return results
@@ -308,7 +354,7 @@ class MultiLangASTParser:
                     r"(?:FROM|INTO|TABLE|WITH)\s+([a-zA-Z0-9_\.]+)", snippet, re.IGNORECASE
                 )
                 name = name_match.group(1) if name_match else f"query_at_line_{start_line}"
-                sexp = f"({node_type} (target {name}) (length {len(snippet)}))"
+                sexp = f"({node_type} len={len(snippet) // 20})"
                 results.append(
                     AccessPoint(
                         file_path=file_path,
@@ -342,7 +388,7 @@ class MultiLangASTParser:
                             break
                 snippet = text[match.start() : end_pos].strip()
                 end_line = start_line + snippet.count("\n")
-                sexp = f"(function_definition (identifier {func_name}))"
+                sexp = f"(function_definition len={len(snippet) // 20})"
                 results.append(
                     AccessPoint(
                         file_path=file_path,
