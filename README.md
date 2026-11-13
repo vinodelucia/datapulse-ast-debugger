@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🛡️ DataPulse AST Debugger v1.1
+# 🛡️ DataPulse AST Debugger v1.2
 ### *Zero-Execution Multi-Language AST Static Debugger & Local RAG Memory*
 **Analisador e debugger estático não-invasivo (100% Read-Only) para Engenharia e Ciência de Dados (Python, SQL, R e JavaScript/TypeScript).**
 
@@ -28,21 +28,21 @@
 ## 🇧🇷 Português (PT-BR)
 
 ### 🎯 Visão Geral
-Ferramentas tradicionais de linting analisam apenas estilo superficial ou exigem a importação/execução de módulos — o que representa um risco de segurança ao auditar pipelines de terceiros e não captura gargalos semânticos de dados (como loops `.iterrows()` em DataFrames, `CROSS JOIN` acidental em SQL ou realocação quadrática em R).
+Linters tradicionais verificam formatação superficial ou exigem importar módulos — o que traz risco ao auditar pipelines de terceiros e deixa passar gargalos de dados (como `.iterrows()` em DataFrames, `CROSS JOIN` em SQL ou crescimento iterativo de objetos em R).
 
-O **DataPulse AST Debugger** foi projetado sob a filosofia **Zero-Execution & Local-First**:
-1. **Leitura Binária 100% Read-Only:** O repositório alvo é lido exclusivamente como bytes brutos e convertido em *Abstract Syntax Trees* (`Tree-sitter`), sem executar ou modificar uma única linha de código.
-2. **Mapeamento de Pontos de Acesso AST:** Funções, classes, queries SQL e blocos vetoriais em R recebem uma assinatura estrutural única (`SHA-256`).
-3. **Memória Evolutiva com RAG Local (`ChromaDB`):** Antes de diagnosticar um bloco, o agente consulta os casos históricos na sua máquina (`.datapulse_memory/`) e contabiliza reincidências automaticamente.
-4. **Inspeção Visual Lado a Lado (`Streamlit`):** Exibe KPIs, Heatmap de incidência por arquivo e o comparativo entre o código original e a refatoração sugerida.
-5. **Contribuição Global Opt-In & Sanitizada:** Ao encerrar a sessão, você decide se deseja compartilhar apenas hashes matemáticos de AST com a comunidade (com auditoria transparente do JSON e remoção total de código-fonte e PII).
+Como o **DataPulse AST Debugger** funciona:
+1. **Leitura binária Read-Only:** Lê o repositório alvo como bytes brutos via `Tree-sitter`, sem executar nem modificar arquivos.
+2. **Pontos de acesso AST:** Mapeia funções, queries SQL, blocos R e métodos JS/TS com uma assinatura estrutural (`SHA-256`) sem nomes nem literais.
+3. **Memória local (`ChromaDB` + `SQLite`):** Grava diagnósticos em lote em `.datapulse_memory/` e aponta reincidências em novas varreduras.
+4. **Dashboard (`Streamlit`):** Mostra KPIs, filtros por severidade, comparação lado a lado e exportação em Markdown/JSON.
+5. **Telemetria Opt-In:** Ao fechar a sessão, você escolhe se envia apenas hashes estruturais e categorias de erro (após redação de segredos/PII e inspeção do JSON).
 
 ### ⚡ Principais Diferenciais
-* **Parsing Multilinguagem Unificado (`Tree-sitter`):** Suporte nativo para `.py`, `.sql`, `.r`/`.R` e **`.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx` (novo na v1.1)**, extraindo nós semânticos reais da árvore sintática com fallback determinístico via stdlib AST.
-* **Motor Híbrido (Google Gemini 2.5 Pro + Heurística Estática Nativa):** Se a variável `GEMINI_API_KEY` estiver configurada, o orquestrador utiliza `gemini-2.5-pro` com *Structured Outputs* (`Pydantic`) e *Chain-of-Thought*. Caso o usuário esteja 100% offline ou sem chave de API, o sistema aciona automaticamente o **Motor Heurístico Determinístico**, garantindo funcionamento imediato (*plug-and-play*).
-* **Memória Vetorial Persistente (`ChromaDB` + `SQLite`):** Embeddings locais de 384 dimensões (`all-MiniLM-L6-v2` com fallback de hash determinístico) e trilha de auditoria local em SQLite (`audit_sessions.sqlite3`).
-* **Dashboard Bilíngue em Tempo Real:** Interface interativa em Streamlit e Plotly com seletor instantâneo de idioma (`🇺🇸 English` | `🇧🇷 Português`) na barra lateral.
-* **Sanitizador de Privacidade e PII:** Filtro integrado que remove caminhos de diretórios locais, endereços IP e código proprietário antes de qualquer exportação Opt-In.
+* **Parsing multilinguagem (`Tree-sitter`):** Suporte nativo para `.py`, `.sql`, `.r`/`.R` e `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`, com fallback determinístico.
+* **Análise offline por padrão + Gemini Opt-In:** Regras determinísticas rodam 100% localmente. O envio ao `gemini-2.5-pro` só ocorre com `--allow-llm` (ou checkbox no painel) e após redação de segredos/PII.
+* **Memória vetorial em lote (`ChromaDB` + `SQLite`):** Embeddings locais de 384 dimensões (`all-MiniLM-L6-v2` com fallback determinístico) e trilha de auditoria local.
+* **Dashboard bilíngue (`PT-BR` / `EN`):** Filtros de linguagem e severidade, paleta de alto contraste e exportação direta.
+* **Sanitizador de privacidade:** Remove caminhos locais, IPs, e-mails e credenciais antes de persistir, chamar o LLM ou exportar telemetria.
 
 ### 🗂️ Gramáticas e Categorias Auditadas
 
@@ -164,23 +164,23 @@ python -m pytest -v
 
 ```text
 datapulse-ast-debugger/
-├── .antigravity/
-│   └── agent_config.yaml        # Regras de segurança Read-Only e configuração do agente
-├── .github/workflows/
-│   └── ci.yml                   # Pipeline CI/CD: Pytest Quality Gate + Grammar Check + Auto Release
-├── dashboard/
-│   └── app.py                   # Interface Streamlit bilíngue (PT-BR / EN) com Heatmap e Modal Opt-In
+├── .antigravity/agent_config.yaml   # Regras de segurança Read-Only
+├── .github/workflows/ci.yml         # Pipeline CI/CD (Python 3.11 & 3.12 + Releases)
+├── docs/
+│   ├── architecture-diagram.html    # Diagrama editorial HTML/SVG da arquitetura
+│   └── adr/                         # Architecture Decision Records
+├── dashboard/app.py                 # Interface Streamlit bilíngue (PT-BR / EN)
 ├── src/
-│   ├── __init__.py
-│   ├── parser_engine.py         # Motor Tree-sitter Read-Only para Python, SQL e R
-│   ├── memory_store.py          # Memória vetorial ChromaDB, auditoria SQLite e sanitizador PII
-│   └── analyzer_agent.py        # Motor híbrido (Gemini 2.5 Pro + Fallback Heurístico Nativo)
-├── tests/
-│   ├── test_datapulse.py        # Testes unitários isolados de AST, RAG e privacidade (Pytest)
-│   └── sample_code/             # Scripts .py, .sql e .R com bugs reais para demonstração
-├── pyproject.toml               # Configuração de pacote e Pytest
-├── requirements.txt             # Dependências oficiais do projeto
-└── setup_grammars.py            # Verificador de gramáticas AST
+│   ├── parser_engine.py             # Motor Tree-sitter Read-Only (Py, SQL, R, JS/TS)
+│   ├── rules.py                     # Regras estáticas offline (maior severidade vence)
+│   ├── privacy.py                   # Redação de PII, caminhos e segredos
+│   ├── memory_store.py              # ChromaDB em lote, auditoria SQLite e telemetria
+│   └── analyzer_agent.py            # Orquestrador RAG + Gemini Opt-In
+├── tests/                           # Suíte Pytest (22 testes) + amostras
+├── cli_audit.py                     # CLI Read-Only para integração com agentes
+├── GLOSSARY.md                      # Glossário canônico de domínio
+├── DESIGN.md                        # Tokens visuais e diretrizes de acessibilidade
+└── setup_grammars.py                # Verificador de gramáticas AST
 ```
 
 ## 📄 Licença / License

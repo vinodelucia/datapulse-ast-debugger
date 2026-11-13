@@ -142,29 +142,43 @@ class LocalDiagnosticMemory:
             conn.commit()
 
     def save_diagnostic(self, record: DiagnosticRecord) -> int:
-        """Armazena o diagnóstico localmente vinculando-o ao ponto de acesso do código."""
-        # Segredos/PII nunca são persistidos em claro na memória local
-        original_code = redact_sensitive(record.original_code)
-        suggested_fix = redact_sensitive(record.suggested_fix)
-        summary = redact_sensitive(record.diagnostic_summary)
+        """Armazena um diagnóstico localmente vinculando-o ao ponto de acesso do código."""
+        counts = self.save_diagnostics_batch([record])
+        return counts.get(record.access_point_id, 1)
 
-        searchable_text = (
-            f"Language: {record.language} | Category: {record.error_category}\n"
-            f"Summary: {summary}\n"
-            f"Code Structure:\n{original_code[:MAX_EMBED_CHARS]}"
-        )
+    def save_diagnostics_batch(self, records: List[DiagnosticRecord]) -> Dict[str, int]:
+        """Persiste uma lista de diagnósticos em lote (1 get + 1 upsert + 1 transação SQLite)."""
+        if not records:
+            return {}
 
-        # Verifica se o mesmo ponto de acesso já apresentou problemas antes
-        existing = self.collection.get(ids=[record.access_point_id])
-        recurrence = 1
+        ids = [r.access_point_id for r in records]
+        existing = self.collection.get(ids=ids)
+        prev_counts: Dict[str, int] = {}
         if existing and existing.get("ids"):
-            prev_meta = existing["metadatas"][0]
-            recurrence = int(prev_meta.get("recurrence_count", 1)) + 1
+            for eid, meta in zip(existing["ids"], existing.get("metadatas") or []):
+                if meta:
+                    prev_counts[eid] = int(meta.get("recurrence_count", 1))
 
-        self.collection.upsert(
-            ids=[record.access_point_id],
-            documents=[searchable_text],
-            metadatas=[
+        documents: List[str] = []
+        metadatas: List[Dict[str, Any]] = []
+        recurrence_map: Dict[str, int] = {}
+        audit_rows: List[tuple] = []
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        for record in records:
+            # Segredos/PII nunca são persistidos em claro na memória local
+            original_code = redact_sensitive(record.original_code)
+            suggested_fix = redact_sensitive(record.suggested_fix)
+            summary = redact_sensitive(record.diagnostic_summary)
+            recurrence = prev_counts.get(record.access_point_id, 0) + 1
+            recurrence_map[record.access_point_id] = recurrence
+
+            documents.append(
+                f"Language: {record.language} | Category: {record.error_category}\n"
+                f"Summary: {summary}\n"
+                f"Code Structure:\n{original_code[:MAX_EMBED_CHARS]}"
+            )
+            metadatas.append(
                 {
                     "file_path": record.file_path,
                     "language": record.language,
@@ -180,10 +194,26 @@ class LocalDiagnosticMemory:
                     "timestamp": record.timestamp,
                     "shared_globally": False,
                 }
-            ],
-        )
-        self.log_audit_event("DIAGNOSTIC_SAVED", record.access_point_id, record.severity)
-        return recurrence
+            )
+            audit_rows.append(("DIAGNOSTIC_SAVED", record.access_point_id, record.severity, now))
+
+        self.collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
+        with sqlite3.connect(self.sqlite_path) as conn:
+            conn.executemany(
+                "INSERT INTO audit_log (event_type, access_point_id, severity, timestamp) VALUES (?, ?, ?, ?)",
+                audit_rows,
+            )
+            conn.commit()
+        return recurrence_map
+
+    def clear_memory(self) -> int:
+        """Remove todos os diagnósticos da coleção local (mantendo o log de auditoria)."""
+        existing = self.collection.get()
+        ids = existing.get("ids") or []
+        if ids:
+            self.collection.delete(ids=ids)
+        self.log_audit_event("MEMORY_CLEARED", f"count={len(ids)}", "INFO")
+        return len(ids)
 
     def retrieve_similar_past_issues(
         self, code_snippet: str, language: str, top_k: int = 3
@@ -226,7 +256,7 @@ class LocalDiagnosticMemory:
         Prepara apenas a assinatura matemática da AST e o resumo conceitual da solução.
         """
         if not selected_ids:
-            return {"client_version": "1.1.0", "contributions": []}
+            return {"client_version": "1.2.0", "contributions": []}
 
         records = self.collection.get(ids=selected_ids)
         contributions: List[Dict[str, str]] = []
@@ -246,7 +276,7 @@ class LocalDiagnosticMemory:
             )
 
         return {
-            "client_version": "1.1.0",
+            "client_version": "1.2.0",
             "contributions": contributions,
         }
 

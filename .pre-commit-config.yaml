@@ -1,0 +1,15 @@
+repos:
+  - repo: local
+    hooks:
+      - id: datapulse-pytest
+        name: DataPulse AST Debugger Test Suite
+        entry: .venv/Scripts/python.exe -m pytest -q
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: datapulse-grammars
+        name: Verify Tree-sitter AST Grammars
+        entry: .venv/Scripts/python.exe setup_grammars.py
+        language: system
+        pass_filenames: false
+        always_run: true

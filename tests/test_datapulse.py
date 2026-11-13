@@ -55,7 +55,7 @@ def test_local_diagnostic_memory_and_privacy_sanitizer():
 
         # Verifica sanitização de código-fonte e PII no payload global
         payload = memory.prepare_anonymized_global_payload([rec.access_point_id])
-        assert payload["client_version"] == "1.1.0"
+        assert payload["client_version"] == "1.2.0"
         contrib = payload["contributions"][0]
         assert "secret_df" not in str(payload)
         assert "192.168.1.50" not in contrib["abstract_diagnostic"]

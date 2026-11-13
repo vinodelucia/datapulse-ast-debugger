@@ -126,9 +126,12 @@ class DataPulseAnalyzerAgent:
         diagnostics: List[DiagnosticRecord] = []
 
         for ap in access_points:
-            record = self.analyze_access_point(ap, persist_to_memory=True)
+            record = self.analyze_access_point(ap, persist_to_memory=False)
             if record is not None:
                 diagnostics.append(record)
+
+        if diagnostics:
+            self.memory.save_diagnostics_batch(diagnostics)
 
         return diagnostics
 

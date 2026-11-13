@@ -38,20 +38,18 @@ def run_cli_audit(
     parser = MultiLangASTParser()
     agent = DataPulseAnalyzerAgent(memory=memory, parser=parser, allow_llm=allow_llm)
 
-    if target.is_file():
-        access_points = parser.parse_file_readonly(str(target))
-        diagnostics: List[DiagnosticRecord] = []
-        for ap in access_points:
-            rec = agent.analyze_access_point(ap, persist_to_memory=True)
-            if rec is not None:
-                diagnostics.append(rec)
-    else:
-        access_points = parser.parse_directory_readonly(str(target), languages=languages)
-        diagnostics = []
-        for ap in access_points:
-            rec = agent.analyze_access_point(ap, persist_to_memory=True)
-            if rec is not None:
-                diagnostics.append(rec)
+    access_points = (
+        parser.parse_file_readonly(str(target))
+        if target.is_file()
+        else parser.parse_directory_readonly(str(target), languages=languages)
+    )
+    diagnostics: List[DiagnosticRecord] = []
+    for ap in access_points:
+        rec = agent.analyze_access_point(ap, persist_to_memory=False)
+        if rec is not None:
+            diagnostics.append(rec)
+    if diagnostics:
+        memory.save_diagnostics_batch(diagnostics)
 
     all_mem = memory.get_all_diagnostics()
     rec_map = {m["access_point_id"]: m.get("recurrence_count", 1) for m in all_mem}

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DataPulse AST Debugger — Architecture</title>
+  <style>
+    :root {
+      --paper: #f5f5f5;
+      --card: #ffffff;
+      --ink: #2d3142;
+      --muted: #5c6478;
+      --border: #d8dde6;
+      --teal: #0f766e;
+      --coral: #bf4520;
+    }
+    body {
+      margin: 0;
+      padding: 40px 24px;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .wrap { max-width: 1040px; margin: 0 auto; }
+    h1 { font-size: 24px; margin: 0 0 6px; letter-spacing: -0.02em; }
+    p.sub { margin: 0 0 28px; color: var(--muted); font-size: 14px; }
+    .canvas {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 24px;
+    }
+    svg { width: 100%; height: auto; display: block; }
+    .note { margin-top: 14px; font-size: 12px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>DataPulse AST Debugger — Read-Only Pipeline</h1>
+    <p class="sub">Zero-execution static analysis across Python, SQL, R, and JavaScript/TypeScript with local RAG memory and opt-in sanitization.</p>
+    <div class="canvas">
+      <svg viewBox="0 0 980 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="DataPulse Read-Only Architecture Flow">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 10 5 L 0 9 z" fill="#5c6478"/>
+          </marker>
+        </defs>
+
+        <!-- Target Repo -->
+        <rect x="20" y="55" width="165" height="84" rx="8" fill="#ffffff" stroke="#2d3142" stroke-width="1.5"/>
+        <text x="102" y="88" text-anchor="middle" font-size="13" font-weight="600" fill="#2d3142">Target Repository</text>
+        <text x="102" y="108" text-anchor="middle" font-size="11" fill="#5c6478">.py .sql .R .js .ts</text>
+        <text x="102" y="124" text-anchor="middle" font-size="10" fill="#0f766e">Read-Only Bytes</text>
+
+        <!-- Tree-sitter Parser -->
+        <rect x="235" y="55" width="175" height="84" rx="8" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
+        <text x="322" y="88" text-anchor="middle" font-size="13" font-weight="600" fill="#2d3142">Tree-sitter Engine</text>
+        <text x="322" y="108" text-anchor="middle" font-size="11" fill="#5c6478">Access Points +</text>
+        <text x="322" y="124" text-anchor="middle" font-size="10" fill="#5c6478">Structural ast_hash</text>
+
+        <!-- Analyzer Orchestrator (Focal Coral) -->
+        <rect x="460" y="47" width="195" height="100" rx="8" fill="#fff7f5" stroke="#bf4520" stroke-width="2"/>
+        <text x="557" y="82" text-anchor="middle" font-size="13" font-weight="700" fill="#bf4520">Analyzer Agent</text>
+        <text x="557" y="102" text-anchor="middle" font-size="11" fill="#2d3142">Offline AST Rules</text>
+        <text x="557" y="118" text-anchor="middle" font-size="11" fill="#5c6478">+ Gemini 2.5 Pro (Opt-In)</text>
+        <text x="557" y="134" text-anchor="middle" font-size="10" fill="#5c6478">Highest severity wins</text>
+
+        <!-- Privacy & PII Sanitizer -->
+        <rect x="710" y="55" width="240" height="84" rx="8" fill="#ffffff" stroke="#2d3142" stroke-width="1.5"/>
+        <text x="830" y="88" text-anchor="middle" font-size="13" font-weight="600" fill="#2d3142">Privacy &amp; PII Sanitizer</text>
+        <text x="830" y="108" text-anchor="middle" font-size="11" fill="#5c6478">Redacts keys, paths, emails, IPs</text>
+        <text x="830" y="124" text-anchor="middle" font-size="10" fill="#0f766e">Applied before store / LLM / share</text>
+
+        <!-- Local Memory -->
+        <rect x="460" y="215" width="195" height="84" rx="8" fill="#ffffff" stroke="#0f766e" stroke-width="1.5"/>
+        <text x="557" y="247" text-anchor="middle" font-size="13" font-weight="600" fill="#2d3142">ChromaDB + SQLite</text>
+        <text x="557" y="266" text-anchor="middle" font-size="11" fill="#5c6478">.datapulse_memory/</text>
+        <text x="557" y="282" text-anchor="middle" font-size="10" fill="#5c6478">Batch upsert &amp; RAG recurrence</text>
+
+        <!-- Dashboard & CLI -->
+        <rect x="235" y="215" width="175" height="84" rx="8" fill="#ffffff" stroke="#2d3142" stroke-width="1.5"/>
+        <text x="322" y="247" text-anchor="middle" font-size="13" font-weight="600" fill="#2d3142">Dashboard &amp; CLI</text>
+        <text x="322" y="266" text-anchor="middle" font-size="11" fill="#5c6478">Streamlit / cli_audit.py</text>
+        <text x="322" y="282" text-anchor="middle" font-size="10" fill="#5c6478">MD / JSON export</text>
+
+        <!-- Opt-In Global Telemetry -->
+        <rect x="710" y="215" width="240" height="84" rx="8" fill="#ffffff" stroke="#2d3142" stroke-dasharray="5,4" stroke-width="1.5"/>
+        <text x="830" y="247" text-anchor="middle" font-size="13" font-weight="600" fill="#2d3142">Opt-In Global Telemetry</text>
+        <text x="830" y="266" text-anchor="middle" font-size="11" fill="#5c6478">Only ast_hash + category</text>
+        <text x="830" y="282" text-anchor="middle" font-size="10" fill="#bf4520">Requires explicit approval</text>
+
+        <!-- Arrows -->
+        <line x1="185" y1="97" x2="233" y2="97" stroke="#5c6478" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <line x1="410" y1="97" x2="458" y2="97" stroke="#5c6478" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <line x1="655" y1="97" x2="708" y2="97" stroke="#5c6478" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <line x1="557" y1="147" x2="557" y2="213" stroke="#5c6478" stroke-width="1.5" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+        <line x1="460" y1="257" x2="412" y2="257" stroke="#5c6478" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <line x1="830" y1="139" x2="830" y2="213" stroke="#5c6478" stroke-dasharray="4,3" stroke-width="1.5" marker-end="url(#arrow)"/>
+      </svg>
+    </div>
+    <p class="note">Editorial schematic — DataPulse AST Debugger v1.2.0. Focal highlight marks the decision seam between offline rules and opt-in LLM analysis.</p>
+  </div>
+</body>
+</html>
