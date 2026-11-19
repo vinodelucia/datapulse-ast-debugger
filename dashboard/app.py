@@ -11,9 +11,12 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from src import __version__
 from src.analyzer_agent import DataPulseAnalyzerAgent
+from src.config import DataPulseConfig
 from src.memory_store import DiagnosticRecord, LocalDiagnosticMemory
 from src.parser_engine import MultiLangASTParser
+from src.sarif_exporter import build_sarif_report
 
 st.set_page_config(
     page_title="DataPulse AST Debugger",
@@ -45,6 +48,8 @@ I18N = {
         "target_dir": "Target Project Directory:",
         "monitored_langs": "Monitored Languages:",
         "severity_filter": "Filter by Severity:",
+        "sql_dialect": "SQL Dialect (SQLGlot):",
+        "multi_finding": "Multi-Finding Mode (all issues per block)",
         "allow_llm": "Enable Gemini LLM (Opt-In, redacted)",
         "allow_llm_help": "Off by default. When enabled and GEMINI_API_KEY is set, sends PII-redacted AST blocks to Gemini.",
         "scan_btn": "🔍 Map AST & Diagnose",
@@ -77,14 +82,17 @@ I18N = {
         "kpi_recurrence": "Memory Recurrences",
         "kpi_status": "Repository Status",
         "kpi_status_val": "Read-Only Safe 🔒",
+        "kpi_health": "Health Score",
+        "kpi_cc": "Avg Complexity (CC)",
         "export_md": "⬇️ Export Markdown",
         "export_json": "⬇️ Export JSON",
+        "export_sarif": "⬇️ Export SARIF 2.1.0",
         "chart_heatmap": "Incidence & Recurrence by File",
         "chart_pie": "Diagnostics by Language (Python, SQL, R, JS/TS)",
         "inspector_title": "🔬 Side-by-Side Access Point Inspector",
         "recurrence_label": "Recurrence",
         "ai_diag": "**Diagnostic:**",
-        "ast_caption": "AST Structural Hash: `{ast_hash}` | Last analyzed: `{timestamp}`",
+        "ast_caption": "AST Structural Hash: `{ast_hash}` | CC: `{cc}` | Last analyzed: `{timestamp}`",
         "orig_code": "❌ **Detected Original Code (Read-Only):**",
         "fix_code": "✅ **Suggested Refactoring (Not Auto-Applied):**",
     },
@@ -93,6 +101,8 @@ I18N = {
         "target_dir": "Diretório do Projeto Alvo:",
         "monitored_langs": "Linguagens Monitoradas:",
         "severity_filter": "Filtrar por Severidade:",
+        "sql_dialect": "Dialeto SQL (SQLGlot):",
+        "multi_finding": "Modo Multi-Achado (todos os erros por bloco)",
         "allow_llm": "Habilitar Gemini LLM (Opt-In, redigido)",
         "allow_llm_help": "Desligado por padrão. Quando ativo com GEMINI_API_KEY, envia blocos com segredos/PII redigidos ao Gemini.",
         "scan_btn": "🔍 Mapear AST & Diagnosticar",
@@ -125,14 +135,17 @@ I18N = {
         "kpi_recurrence": "Reincidências na Memória",
         "kpi_status": "Status do Repositório",
         "kpi_status_val": "Read-Only Seguro 🔒",
+        "kpi_health": "Health Score",
+        "kpi_cc": "Complexidade Média (CC)",
         "export_md": "⬇️ Exportar Markdown",
         "export_json": "⬇️ Exportar JSON",
+        "export_sarif": "⬇️ Exportar SARIF 2.1.0",
         "chart_heatmap": "Incidência e Recorrência por Arquivo",
         "chart_pie": "Diagnósticos por Linguagem (Python, SQL, R, JS/TS)",
         "inspector_title": "🔬 Inspetor de Pontos de Acesso (Lado a Lado)",
         "recurrence_label": "Recorrência",
         "ai_diag": "**Diagnóstico:**",
-        "ast_caption": "Hash da Árvore Sintática (AST): `{ast_hash}` | Última análise: `{timestamp}`",
+        "ast_caption": "Hash da Árvore Sintática (AST): `{ast_hash}` | CC: `{cc}` | Última análise: `{timestamp}`",
         "orig_code": "❌ **Código Original Detectado (Read-Only):**",
         "fix_code": "✅ **Sugestão de Refatoração (Não Aplicada Automaticamente):**",
     },
@@ -184,12 +197,22 @@ with st.sidebar:
         options=SEVERITY_ORDER,
         default=SEVERITY_ORDER,
     )
+    sql_dialect_choice = st.selectbox(
+        t["sql_dialect"],
+        options=["Auto", "postgres", "bigquery", "snowflake", "duckdb", "spark", "tsql", "mysql"],
+        index=0,
+    )
+    multi_finding = st.checkbox(t["multi_finding"], value=True)
     allow_llm = st.checkbox(t["allow_llm"], value=False, help=t["allow_llm_help"])
 
     if st.button(t["scan_btn"], use_container_width=True, type="primary"):
         st.toast(t["scan_toast"], icon="🔒")
+        cfg = DataPulseConfig.load(target_dir)
+        if sql_dialect_choice != "Auto":
+            cfg.sql_dialect = sql_dialect_choice
+        cfg.multi_finding = multi_finding
         agent = DataPulseAnalyzerAgent(memory=memory, parser=parser, allow_llm=allow_llm)
-        scanned_records = agent.scan_directory(target_dir, languages=lang_filter)
+        scanned_records = agent.scan_directory(target_dir, languages=lang_filter, config=cfg)
 
         if not scanned_records:
             sample_record = DiagnosticRecord(
@@ -263,16 +286,38 @@ else:
     df = df[df["language"].isin(lang_filter) & df["severity"].isin(severity_filter)]
 
     # Top KPIs
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    if "cyclomatic_complexity" not in df.columns:
+        df["cyclomatic_complexity"] = 1
+    avg_cc = float(df["cyclomatic_complexity"].fillna(1).mean()) if not df.empty else 1.0
+    health_records = [
+        DiagnosticRecord(
+            file_path=str(r.get("file_path", "")),
+            language=str(r.get("language", "python")),
+            access_point_id=str(r.get("access_point_id", "")),
+            ast_hash=str(r.get("ast_hash", "")),
+            severity=str(r.get("severity", "LOW")),
+            error_category=str(r.get("error_category", "")),
+            diagnostic_summary=str(r.get("diagnostic_summary", "")),
+            original_code=str(r.get("original_code", "")),
+            suggested_fix=str(r.get("suggested_fix", "")),
+        )
+        for r in df.to_dict(orient="records")
+    ]
+    health = DataPulseAnalyzerAgent.compute_health_score(
+        max(1, len(df)), health_records, avg_complexity=avg_cc
+    )
+
+    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
     kpi1.metric(t["kpi_mapped"], len(df))
     kpi2.metric(t["kpi_critical"], len(df[df["severity"].isin(["CRITICAL", "HIGH"])]))
     kpi3.metric(t["kpi_recurrence"], int(max(0, df["recurrence_count"].sum() - len(df))))
-    kpi4.metric(t["kpi_status"], t["kpi_status_val"])
+    kpi4.metric(t["kpi_health"], f"{health['score']}/100 ({health['grade']})")
+    kpi5.metric(t["kpi_cc"], f"{health['avg_complexity']}")
 
     if df.empty:
         st.info(t["empty_filter"])
     else:
-        exp1, exp2, _ = st.columns([1, 1, 4])
+        exp1, exp2, exp3, _ = st.columns([1, 1, 1, 3])
         with exp1:
             st.download_button(
                 t["export_md"],
@@ -287,6 +332,17 @@ else:
                 data=json.dumps(df.to_dict(orient="records"), indent=2, ensure_ascii=False),
                 file_name="datapulse_report.json",
                 mime="application/json",
+                use_container_width=True,
+            )
+        with exp3:
+            sarif_doc = build_sarif_report(
+                df.to_dict(orient="records"), tool_version=__version__, base_dir=target_dir
+            )
+            st.download_button(
+                t["export_sarif"],
+                data=json.dumps(sarif_doc, indent=2, ensure_ascii=False),
+                file_name="datapulse_report.sarif",
+                mime="application/sarif+json",
                 use_container_width=True,
             )
 
@@ -327,7 +383,9 @@ else:
                 st.markdown(f"{t['ai_diag']} {row['diagnostic_summary']}")
                 st.caption(
                     t["ast_caption"].format(
-                        ast_hash=row["ast_hash"], timestamp=row["timestamp"]
+                        ast_hash=row["ast_hash"],
+                        cc=int(row.get("cyclomatic_complexity", 1) or 1),
+                        timestamp=row["timestamp"],
                     )
                 )
 

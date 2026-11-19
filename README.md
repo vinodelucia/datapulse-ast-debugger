@@ -1,13 +1,14 @@
 <div align="center">
 
-# 🛡️ DataPulse AST Debugger v1.2
-### *Zero-Execution Multi-Language AST Static Debugger & Local RAG Memory*
+# 🛡️ DataPulse AST Debugger v2.0
+### *Zero-Execution Multi-Language AST Static Debugger, SQLGlot & SARIF 2.1.0*
 **Analisador e debugger estático não-invasivo (100% Read-Only) para Engenharia e Ciência de Dados (Python, SQL, R e JavaScript/TypeScript).**
 
 [![CI/CD Build & Test](https://github.com/vinodelucia/datapulse-ast-debugger/actions/workflows/ci.yml/badge.svg)](https://github.com/vinodelucia/datapulse-ast-debugger/actions/workflows/ci.yml)
 [![Latest Release](https://img.shields.io/github/v/release/vinodelucia/datapulse-ast-debugger?color=38bdf8&label=Release&logo=github)](https://github.com/vinodelucia/datapulse-ast-debugger/releases/latest)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
-[![AST Engine](https://img.shields.io/badge/AST-Tree--sitter-10b981)](#)
+[![AST Engine](https://img.shields.io/badge/AST-Tree--sitter%20%2B%20SQLGlot-10b981)](#)
+[![SARIF 2.1.0](https://img.shields.io/badge/Output-SARIF%202.1.0-6366f1)](#)
 [![Vector DB](https://img.shields.io/badge/VectorDB-Chroma%20Local-f97316)](#)
 [![Security Mode](https://img.shields.io/badge/Mode-100%25%20Read--Only-4ade80)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -38,25 +39,20 @@ Como o **DataPulse AST Debugger** funciona:
 5. **Telemetria Opt-In:** Ao fechar a sessão, você escolhe se envia apenas hashes estruturais e categorias de erro (após redação de segredos/PII e inspeção do JSON).
 
 ### ⚡ Principais Diferenciais
-* **Parsing multilinguagem (`Tree-sitter`):** Suporte nativo para `.py`, `.sql`, `.r`/`.R` e `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`, com fallback determinístico.
-* **Análise offline por padrão + Gemini Opt-In:** Regras determinísticas rodam 100% localmente. O envio ao `gemini-2.5-pro` só ocorre com `--allow-llm` (ou checkbox no painel) e após redação de segredos/PII.
-* **Memória vetorial em lote (`ChromaDB` + `SQLite`):** Embeddings locais de 384 dimensões (`all-MiniLM-L6-v2` com fallback determinístico) e trilha de auditoria local.
-* **Dashboard bilíngue (`PT-BR` / `EN`):** Filtros de linguagem e severidade, paleta de alto contraste e exportação direta.
-* **Sanitizador de privacidade:** Remove caminhos locais, IPs, e-mails e credenciais antes de persistir, chamar o LLM ou exportar telemetria.
+* **Motor AST Real (`Tree-sitter` + `SQLGlot` + `ast`):** Suporte nativo para Python (Pandas, PySpark, Polars, Ruff `PD`/`S`), SQL em **30+ dialetos** via `SQLGlot` (Postgres, BigQuery, Snowflake, DuckDB, Spark, T-SQL), R (`lintr`) e JS/TS (`eslint-plugin-security`/`n`/`promise`, Semgrep).
+* **Multi-Achado & Complexidade Ciclomática:** Reporta todos os problemas distintos de cada função/query, calcula complexidade ciclomática (`CC`) e gera um **Health Score (0–100 / A–F)**.
+* **SARIF 2.1.0 & Quality Gate CI:** Exportação nativa `--format sarif` compatível com GitHub Code Scanning (`upload-sarif`), `--fail-on` e modo `--incremental` (cache SHA-256 em SQLite).
+* **Configuração por Projeto (`.datapulse.yml` / `pyproject.toml`):** Suporte a `ignore_paths`, `disable_rules`, `min_severity`, `complexity_threshold` e `sql_dialect`.
+* **RAG em Lote + Privacidade First:** Consultas e gravações em lote no `ChromaDB`, sem envio externo por padrão (`--allow-llm` exige Opt-In e redige segredos/PII).
 
 ### 🗂️ Gramáticas e Categorias Auditadas
 
 | Linguagem | Nós AST Mapeados | Categoria de Diagnóstico | Impacto Mitigado |
 | :--- | :--- | :--- | :--- |
-| **Python (`.py`)** | `function_definition`, `class_definition`, `with_statement` | `Pandas_Iterrows_Bottleneck` | Substitui iteração linha a linha por vetorização C-level em DataFrames. |
-| **Python (`.py`)** | `function_definition` | `Pandas_ChainedIndexing_Warning` | Previne mutações silenciosas em cópias temporárias (`SettingWithCopyWarning`). |
-| **Python (`.py`)** | `function_definition` | `SQL_Injection_Vulnerability` | Detecta interpolação direta (`f-strings`) em cursores de banco de dados. |
-| **SQL (`.sql`)** | `select`, `create_table_statement`, `cte` | `SQL_FullTableScan` | Identifica `SELECT *` combinado com `CROSS JOIN` ou predicados não-indexáveis (`LIKE '%...'`). |
-| **R (`.r`, `.R`)** | `function_definition`, `left_assignment`, `call` | `R_Vectorization_Missing` | Elimina crescimento iterativo de objetos (`rbind` em loop `for`) com custo $O(N^2)$ de RAM. |
-| **JavaScript/TS (`.js`, `.ts`, `.tsx`)** | `function_declaration`, `method_definition`, arrow functions | `JS_Eval_Code_Injection` / `JS_Command_Injection` | Bloqueia `eval`/`new Function` e `child_process.exec` com entrada dinâmica (inspirado em `eslint-plugin-security`). |
-| **JavaScript/TS** | `function_declaration`, `method_definition` | `JS_Sync_IO_Blocking_EventLoop` | Aponta `fs.*Sync` em handlers que bloqueiam o event loop (inspirado em `eslint-plugin-n`). |
-| **JavaScript/TS** | arrow functions, `method_definition` | `JS_Unhandled_Promise_Rejection` | `.then()` sem `.catch()` / `try` (inspirado em `eslint-plugin-promise`). |
-| **JavaScript/TS** | funções em geral | `JS_ReDoS_Unsafe_Regex` / `JS_Hardcoded_Secret` / `SQL_Injection_Vulnerability` | Regex com quantificadores aninhados, segredos hardcoded e SQL por template literal. |
+| **Python (`.py`)** | `function_definition`, `ast` | `PySpark_Collect_Driver_OOM`, `Polars_Row_Iteration_Bottleneck`, `Python_Eval_Exec_Injection`, `Python_Insecure_Deserialization` | Evita OOM no driver Spark, quebra de vetorização no Polars e execução/desserialização insegura. |
+| **SQL (`.sql`)** | `SQLGlot` AST (30+ dialetos) | `SQL_Mutation_Without_Where`, `SQL_Cartesian_Join_Missing_On`, `SQL_NotIn_Subquery`, `SQL_Distinct_With_Join`, `SQL_Union_Without_All` | Previne `UPDATE`/`DELETE` sem `WHERE`, joins cartesianos, armadilhas de `NULL` e sorts caros. |
+| **R (`.r`, `.R`)** | `Tree-sitter` AST (`function_definition`, `for`, `call`) | `R_Vectorization_Missing`, `R_T_F_Symbol_Usage`, `R_Attach_Namespace_Pollution`, `R_Sapply_Type_Unsafe` | Elimina crescimento $O(N^2)$ em loops, uso inseguro de `T`/`F`, `attach()` e `sapply()`. |
+| **JavaScript/TS (`.js`, `.ts`, `.tsx`)** | `Tree-sitter` AST (`function_declaration`, `method_definition`, arrow functions) | `JS_Prototype_Pollution`, `JS_SSRF_Dynamic_Fetch`, `JS_Await_In_Loop`, `JS_Unsafe_JSON_Parse`, `JS_Eval_Code_Injection` | Bloqueia prototype pollution, SSRF, `eval`/`exec`, `await` em loop e `JSON.parse` sem `try`. |
 
 ### 🏛️ Arquitetura de Alto Nível
 
@@ -118,25 +114,20 @@ Traditional linters only check surface-level formatting or require importing/exe
 5. **Opt-In Anonymized Global Telemetry:** Upon closing a session, you choose whether to contribute abstract AST signatures to the community (with transparent JSON inspection and strict stripping of source code and PII).
 
 ### ⚡ Key Features
-* **Unified Multi-Language AST Engine (`Tree-sitter`):** Native support for `.py`, `.sql`, `.r`/`.R`, and **`.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx` (new in v1.1)**, extracting semantic syntax nodes with a deterministic stdlib AST fallback.
-* **Hybrid AI Engine (Google Gemini 2.5 Pro + Native Static Heuristics):** Automatically connects to `gemini-2.5-pro` via `google-genai` with *Structured Outputs* (`Pydantic`) and *Chain-of-Thought* when `GEMINI_API_KEY` is set. If no API key is provided or you are offline, it seamlessly falls back to a **Zero-Config Deterministic Static Engine**.
-* **Persistent Vector Memory (`ChromaDB` + `SQLite`):** 384-dimensional local embeddings (`all-MiniLM-L6-v2` with deterministic hash fallback) paired with a local SQLite session audit log (`audit_sessions.sqlite3`).
-* **Bilingual Reactive Dashboard:** Built with Streamlit and Plotly featuring a live sidebar toggle (`🇺🇸 English` | `🇧🇷 Português`).
-* **Built-In PII & Source Code Sanitizer:** Automatically redacts local file paths, IPv4 addresses, and proprietary source code from any opt-in telemetry payload.
+* **True AST Engine (`Tree-sitter` + `SQLGlot` + `ast`):** Native rules for Python (Pandas, PySpark, Polars, Ruff `PD`/`S`), **30+ SQL dialects** via `SQLGlot` (Postgres, BigQuery, Snowflake, DuckDB, Spark, T-SQL), R (`lintr`), and JS/TS (`eslint-plugin-security`/`n`/`promise`, Semgrep).
+* **Multi-Finding & Cyclomatic Complexity:** Surfaces every distinct issue per Access Point, computes cyclomatic complexity (`CC`), and outputs a **Health Score (0–100 / A–F)**.
+* **SARIF 2.1.0 & CI Quality Gates:** Native `--format sarif` export for GitHub Code Scanning (`upload-sarif`), `--fail-on` severity gates, and `--incremental` SQLite SHA-256 caching.
+* **Per-Project Config (`.datapulse.yml` / `pyproject.toml`):** Supports `ignore_paths`, `disable_rules`, `min_severity`, `complexity_threshold`, and `sql_dialect`.
+* **Batched Local RAG & Privacy First:** 1-query-per-language `ChromaDB` lookups, zero external transmission by default (`--allow-llm` opt-in with secret/PII redaction).
 
 ### 🗂️ Audited Grammars & Vulnerability Categories
 
-| Language | Mapped AST Nodes | Diagnostic Category | Mitigated Impact |
+| Language | AST Engine | Diagnostic Categories | Mitigated Impact |
 | :--- | :--- | :--- | :--- |
-| **Python (`.py`)** | `function_definition`, `class_definition`, `with_statement` | `Pandas_Iterrows_Bottleneck` | Replaces row-by-row iteration with C-level vectorized DataFrame operations. |
-| **Python (`.py`)** | `function_definition` | `Pandas_ChainedIndexing_Warning` | Prevents silent mutations on temporary copies (`SettingWithCopyWarning`). |
-| **Python (`.py`)** | `function_definition` | `SQL_Injection_Vulnerability` | Detects raw `f-string` / string concatenation inside database cursor calls. |
-| **SQL (`.sql`)** | `select`, `create_table_statement`, `cte` | `SQL_FullTableScan` | Flags `SELECT *` combined with `CROSS JOIN` or non-sargable predicates (`LIKE '%...'`). |
-| **R (`.r`, `.R`)** | `function_definition`, `left_assignment`, `call` | `R_Vectorization_Missing` | Eliminates iterative object growth (`rbind` inside `for` loops) with $O(N^2)$ RAM overhead. |
-| **JavaScript/TS (`.js`, `.ts`, `.tsx`)** | `function_declaration`, `method_definition`, arrow functions | `JS_Eval_Code_Injection` / `JS_Command_Injection` | Flags `eval` / `new Function` and `child_process.exec` with dynamic input (inspired by `eslint-plugin-security`). |
-| **JavaScript/TS** | `function_declaration`, `method_definition` | `JS_Sync_IO_Blocking_EventLoop` | Flags `fs.*Sync` inside handlers that block the event loop (inspired by `eslint-plugin-n`). |
-| **JavaScript/TS** | arrow functions, `method_definition` | `JS_Unhandled_Promise_Rejection` | `.then()` without `.catch()` / `try` (inspired by `eslint-plugin-promise`). |
-| **JavaScript/TS** | any function | `JS_ReDoS_Unsafe_Regex` / `JS_Hardcoded_Secret` / `SQL_Injection_Vulnerability` | Nested-quantifier regex, hardcoded secrets and SQL built via template literals. |
+| **Python (`.py`)** | `stdlib ast` | `PySpark_Collect_Driver_OOM`, `Polars_Row_Iteration_Bottleneck`, `Python_Eval_Exec_Injection`, `Python_Insecure_Deserialization` | Prevents Spark driver OOMs, Polars vectorization loss, and unsafe execution/deserialization. |
+| **SQL (`.sql`)** | `SQLGlot` AST (30+ dialects) | `SQL_Mutation_Without_Where`, `SQL_Cartesian_Join_Missing_On`, `SQL_NotIn_Subquery`, `SQL_Distinct_With_Join`, `SQL_Union_Without_All` | Catches unguarded `UPDATE`/`DELETE`, missing `JOIN ON`, `NULL` traps, and costly sorts. |
+| **R (`.r`, `.R`)** | `Tree-sitter` AST | `R_Vectorization_Missing`, `R_T_F_Symbol_Usage`, `R_Attach_Namespace_Pollution`, `R_Sapply_Type_Unsafe` | Eliminates $O(N^2)$ loop growth, mutable `T`/`F` symbols, `attach()`, and `sapply()`. |
+| **JavaScript/TS (`.js`, `.ts`, `.tsx`)** | `Tree-sitter` AST | `JS_Prototype_Pollution`, `JS_SSRF_Dynamic_Fetch`, `JS_Await_In_Loop`, `JS_Unsafe_JSON_Parse`, `JS_Eval_Code_Injection` | Flags prototype pollution, SSRF, `eval`/`exec`, `await` in loops, and unguarded `JSON.parse`. |
 
 ### 🛠️ Quick Start (From Source)
 ```bash
@@ -171,12 +162,15 @@ datapulse-ast-debugger/
 │   └── adr/                         # Architecture Decision Records
 ├── dashboard/app.py                 # Interface Streamlit bilíngue (PT-BR / EN)
 ├── src/
-│   ├── parser_engine.py             # Motor Tree-sitter Read-Only (Py, SQL, R, JS/TS)
-│   ├── rules.py                     # Regras estáticas offline (maior severidade vence)
+│   ├── parser_engine.py             # Motor Tree-sitter + SQLGlot (Py, SQL, R, JS/TS) + CC
+│   ├── config.py                    # Loader de .datapulse.yml e [tool.datapulse]
+│   ├── ast_rules.py                 # Detectores AST (stdlib ast, SQLGlot, Tree-sitter)
+│   ├── rules.py                     # Catálogo multi-achado + fallback linear O(N)
+│   ├── sarif_exporter.py            # Exportador SARIF 2.1.0 (GitHub Code Scanning)
 │   ├── privacy.py                   # Redação de PII, caminhos e segredos
-│   ├── memory_store.py              # ChromaDB em lote, auditoria SQLite e telemetria
-│   └── analyzer_agent.py            # Orquestrador RAG + Gemini Opt-In
-├── tests/                           # Suíte Pytest (22 testes) + amostras
+│   ├── memory_store.py              # ChromaDB em lote, cache incremental SQLite e telemetria
+│   └── analyzer_agent.py            # Orquestrador RAG + Health Score + Gemini Opt-In
+├── tests/                           # Suíte Pytest (30 testes) + amostras
 ├── cli_audit.py                     # CLI Read-Only para integração com agentes
 ├── GLOSSARY.md                      # Glossário canônico de domínio
 ├── DESIGN.md                        # Tokens visuais e diretrizes de acessibilidade

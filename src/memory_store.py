@@ -1,10 +1,11 @@
 import datetime
 import hashlib
 import json
+import logging
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import chromadb
 import requests
@@ -12,6 +13,8 @@ from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 from pydantic import BaseModel, Field
 
 from src.privacy import redact_sensitive, sanitize_category, sanitize_summary
+
+logger = logging.getLogger(__name__)
 
 MAX_EMBED_CHARS = 2000  # trunca o texto embutido (custo de embedding e ruído)
 
@@ -76,6 +79,10 @@ class DiagnosticRecord(BaseModel):
     diagnostic_summary: str
     original_code: str
     suggested_fix: str
+    start_line: int = 1
+    end_line: int = 1
+    cyclomatic_complexity: int = 1
+    source: str = "heuristic"
     timestamp: str = Field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
     )
@@ -128,6 +135,34 @@ class LocalDiagnosticMemory:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scanned_files (
+                    file_path TEXT PRIMARY KEY,
+                    sha256 TEXT NOT NULL,
+                    scanned_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.commit()
+
+    def get_scanned_file_hashes(self) -> Dict[str, str]:
+        """Retorna mapa file_path -> sha256 dos arquivos já auditados."""
+        with sqlite3.connect(self.sqlite_path) as conn:
+            rows = conn.execute("SELECT file_path, sha256 FROM scanned_files").fetchall()
+        return {str(fp): str(digest) for fp, digest in rows}
+
+    def mark_files_scanned(self, file_hashes: Dict[str, str]) -> None:
+        """Registra/atualiza SHA-256 dos arquivos auditados para varredura incremental."""
+        if not file_hashes:
+            return
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        rows = [(fp, digest, now) for fp, digest in file_hashes.items()]
+        with sqlite3.connect(self.sqlite_path) as conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO scanned_files (file_path, sha256, scanned_at) VALUES (?, ?, ?)",
+                rows,
+            )
             conn.commit()
 
     def log_audit_event(
@@ -151,7 +186,13 @@ class LocalDiagnosticMemory:
         if not records:
             return {}
 
-        ids = [r.access_point_id for r in records]
+        # Deduplica mantendo a última ocorrência para evitar DuplicateIDError no ChromaDB
+        dedup_map: Dict[str, DiagnosticRecord] = {}
+        for r in records:
+            dedup_map[r.access_point_id] = r
+        unique_records = list(dedup_map.values())
+
+        ids = [r.access_point_id for r in unique_records]
         existing = self.collection.get(ids=ids)
         prev_counts: Dict[str, int] = {}
         if existing and existing.get("ids"):
@@ -165,7 +206,7 @@ class LocalDiagnosticMemory:
         audit_rows: List[tuple] = []
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-        for record in records:
+        for record in unique_records:
             # Segredos/PII nunca são persistidos em claro na memória local
             original_code = redact_sensitive(record.original_code)
             suggested_fix = redact_sensitive(record.suggested_fix)
@@ -190,6 +231,10 @@ class LocalDiagnosticMemory:
                     "diagnostic_summary": summary,
                     "original_code": original_code,
                     "suggested_fix": suggested_fix,
+                    "start_line": int(record.start_line),
+                    "end_line": int(record.end_line),
+                    "cyclomatic_complexity": int(record.cyclomatic_complexity),
+                    "source": record.source,
                     "recurrence_count": recurrence,
                     "timestamp": record.timestamp,
                     "shared_globally": False,
@@ -219,29 +264,46 @@ class LocalDiagnosticMemory:
         self, code_snippet: str, language: str, top_k: int = 3
     ) -> List[Dict[str, Any]]:
         """Busca na memória local se padrões parecidos já foram resolvidos no passado."""
+        return self.retrieve_similar_batch([(code_snippet, language)], top_k=top_k)[0]
+
+    def retrieve_similar_batch(
+        self, items: List[Tuple[str, str]], top_k: int = 3
+    ) -> List[List[Dict[str, Any]]]:
+        """Busca RAG em lote (no máximo 1 query ChromaDB por linguagem)."""
+        if not items:
+            return []
         total = self.collection.count()
         if total == 0:
-            return []
+            return [[] for _ in items]
 
-        try:
-            results = self.collection.query(
-                query_texts=[code_snippet],
-                n_results=min(top_k, total),
-                where={"language": language},
-            )
-        except Exception:
-            return []
+        out: List[List[Dict[str, Any]]] = [[] for _ in items]
+        by_lang: Dict[str, List[int]] = {}
+        for idx, (_snippet, lang) in enumerate(items):
+            by_lang.setdefault(lang, []).append(idx)
 
-        matches: List[Dict[str, Any]] = []
-        if results and results.get("metadatas") and results["metadatas"][0]:
-            distances = (
-                results["distances"][0]
-                if results.get("distances") and results["distances"]
-                else [0.0] * len(results["metadatas"][0])
-            )
-            for meta, dist in zip(results["metadatas"][0], distances):
-                matches.append({"metadata": meta, "similarity_distance": round(float(dist), 4)})
-        return matches
+        n_res = min(top_k, total)
+        for lang, indices in by_lang.items():
+            texts = [items[i][0][:MAX_EMBED_CHARS] for i in indices]
+            try:
+                results = self.collection.query(
+                    query_texts=texts,
+                    n_results=n_res,
+                    where={"language": lang},
+                )
+            except Exception as exc:
+                logger.debug("Consulta RAG em lote ignorada para %s: %s", lang, exc)
+                continue
+
+            metas_list = (results or {}).get("metadatas") or []
+            dists_list = (results or {}).get("distances") or []
+            for pos, orig_idx in enumerate(indices):
+                metas = metas_list[pos] if pos < len(metas_list) else []
+                dists = dists_list[pos] if pos < len(dists_list) else [0.0] * len(metas)
+                matches: List[Dict[str, Any]] = []
+                for meta, dist in zip(metas, dists):
+                    matches.append({"metadata": meta, "similarity_distance": round(float(dist), 4)})
+                out[orig_idx] = matches
+        return out
 
     def get_all_diagnostics(self) -> List[Dict[str, Any]]:
         """Retorna todo o histórico local para alimentar o Dashboard."""
@@ -256,7 +318,7 @@ class LocalDiagnosticMemory:
         Prepara apenas a assinatura matemática da AST e o resumo conceitual da solução.
         """
         if not selected_ids:
-            return {"client_version": "1.2.0", "contributions": []}
+            return {"client_version": "2.0.0", "contributions": []}
 
         records = self.collection.get(ids=selected_ids)
         contributions: List[Dict[str, str]] = []
@@ -276,7 +338,7 @@ class LocalDiagnosticMemory:
             )
 
         return {
-            "client_version": "1.2.0",
+            "client_version": "2.0.0",
             "contributions": contributions,
         }
 

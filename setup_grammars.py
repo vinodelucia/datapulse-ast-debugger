@@ -1,6 +1,6 @@
-"""Script de verificação e inicialização das gramáticas AST (Tree-sitter) para Python, SQL e R."""
+"""Script de verificação e inicialização das gramáticas AST (Tree-sitter + SQLGlot) para Python, SQL, R e JS/TS."""
 
-from src.parser_engine import HAS_TREE_SITTER, MultiLangASTParser
+from src.parser_engine import HAS_SQLGLOT, HAS_TREE_SITTER, MultiLangASTParser
 
 
 def verify_grammars() -> bool:
@@ -13,6 +13,12 @@ def verify_grammars() -> bool:
         active_parser = parser.parsers.get(lang)
         status = "READY (Tree-sitter)" if active_parser is not None else "READY (Deterministic AST Fallback)"
         print(f"  - [{lang.upper()}]: {status}")
+
+    if HAS_SQLGLOT:
+        import sqlglot
+        print(f"  - [SQLGLOT]: READY (v{sqlglot.__version__})")
+    else:
+        print("  - [SQLGLOT]: FALLBACK (Tree-sitter / Regex)")
 
     print("All target languages verified in 100% Read-Only mode.")
     return True

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "datapulse-ast-debugger"
-version = "1.2.0"
-description = "Read-Only Multi-Language AST Static Debugger for Data Engineering & Backend (Python, SQL, R, JavaScript/TypeScript) with ChromaDB RAG Memory"
+version = "2.0.0"
+description = "Read-Only Multi-Language AST Static Debugger for Data Engineering & Backend (Python, SQL, R, JavaScript/TypeScript) with SQLGlot, SARIF 2.1.0 & ChromaDB RAG Memory"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

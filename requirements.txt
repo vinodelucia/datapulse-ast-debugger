@@ -1,6 +1,8 @@
 # Core AST Parsing (Repositórios: tree-sitter/tree-sitter & grantjenks/py-tree-sitter-languages)
 tree-sitter==0.21.3
 tree-sitter-languages>=1.10.2
+# Multi-dialect SQL AST Parser (tobymao/sqlglot)
+sqlglot>=25.0.0
 
 # Banco Vetorial Local e Orquestração (Repositórios: chroma-core/chroma, run-llama/llama_index)
 chromadb>=0.5.0

@@ -22,3 +22,12 @@ The deterministic redaction of local file paths, IP addresses, emails, and crede
 
 ## Opt-In Telemetry
 An explicit, user-authorized export of anonymized AST Hashes and error categories containing zero source code or personally identifiable information.
+
+## SARIF Report
+An OASIS SARIF 2.1.0 JSON document emitted by DataPulse mapping each Diagnostic Record to GitHub Code Scanning rules, CVSS-aligned severity scores, and file line regions.
+
+## Cyclomatic Complexity
+The count of independent decision branches (`1 + branches`) within a single Access Point computed from its syntax tree.
+
+## Health Score
+A 0–100 repository score and letter grade (`A`–`F`) derived from Access Point volume and severity-weighted findings.

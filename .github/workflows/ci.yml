@@ -41,6 +41,18 @@ jobs:
         run: |
           python -m pytest -v
 
+      - name: Auto-Auditoria Read-Only e Geração SARIF 2.1.0
+        if: matrix.python-version == '3.12'
+        run: |
+          python cli_audit.py --target src --format sarif --output datapulse-self-audit.sarif --fast-embeddings
+
+      - name: Upload do Artefato SARIF
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: datapulse-sarif-report
+          path: datapulse-self-audit.sarif
+
       - name: Criar Release Pública no GitHub (Quando subir uma Tag v*)
         if: startsWith(github.ref, 'refs/tags/v') && matrix.python-version == '3.12'
         uses: softprops/action-gh-release@v2
