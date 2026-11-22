@@ -13,3 +13,9 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      - id: datapulse-leak-guard
+        name: DataPulse Leak-Guard Secret Scan
+        entry: .venv/Scripts/python.exe scripts/leak_guard.py
+        language: system
+        pass_filenames: false
+        always_run: true

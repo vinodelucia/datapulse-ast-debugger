@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🛡️ DataPulse AST Debugger v2.0
+# 🛡️ DataPulse AST Debugger v2.1
 ### *Zero-Execution Multi-Language AST Static Debugger, SQLGlot & SARIF 2.1.0*
 **Analisador e debugger estático não-invasivo (100% Read-Only) para Engenharia e Ciência de Dados (Python, SQL, R e JavaScript/TypeScript).**
 
@@ -43,7 +43,8 @@ Como o **DataPulse AST Debugger** funciona:
 * **Multi-Achado & Complexidade Ciclomática:** Reporta todos os problemas distintos de cada função/query, calcula complexidade ciclomática (`CC`) e gera um **Health Score (0–100 / A–F)**.
 * **SARIF 2.1.0 & Quality Gate CI:** Exportação nativa `--format sarif` compatível com GitHub Code Scanning (`upload-sarif`), `--fail-on` e modo `--incremental` (cache SHA-256 em SQLite).
 * **Configuração por Projeto (`.datapulse.yml` / `pyproject.toml`):** Suporte a `ignore_paths`, `disable_rules`, `min_severity`, `complexity_threshold` e `sql_dialect`.
-* **RAG em Lote + Privacidade First:** Consultas e gravações em lote no `ChromaDB`, sem envio externo por padrão (`--allow-llm` exige Opt-In e redige segredos/PII).
+* **Sanitizador + Leak-Guard (28+ padrões):** Redige tokens (AWS, GCP/Google, GitHub, OpenAI, Anthropic, HuggingFace, Slack, Stripe, npm/PyPI, chaves privadas, Basic Auth) antes de persistir/enviar e inclui workflow `leak-guard.yml`.
+* **Novas Regras SSRF / SSTI / XXE:** Detecta SSRF (`requests`/`urllib`), SSTI (`jinja2`/`ejs`/`pug`) e XML inseguro sem `defusedxml`, além de gate de triagem no prompt LLM.
 
 ### 🗂️ Gramáticas e Categorias Auditadas
 
@@ -118,7 +119,8 @@ Traditional linters only check surface-level formatting or require importing/exe
 * **Multi-Finding & Cyclomatic Complexity:** Surfaces every distinct issue per Access Point, computes cyclomatic complexity (`CC`), and outputs a **Health Score (0–100 / A–F)**.
 * **SARIF 2.1.0 & CI Quality Gates:** Native `--format sarif` export for GitHub Code Scanning (`upload-sarif`), `--fail-on` severity gates, and `--incremental` SQLite SHA-256 caching.
 * **Per-Project Config (`.datapulse.yml` / `pyproject.toml`):** Supports `ignore_paths`, `disable_rules`, `min_severity`, `complexity_threshold`, and `sql_dialect`.
-* **Batched Local RAG & Privacy First:** 1-query-per-language `ChromaDB` lookups, zero external transmission by default (`--allow-llm` opt-in with secret/PII redaction).
+* **Secret Sanitizer + Leak-Guard (28+ patterns):** Redacts provider tokens (AWS, GCP/Google, GitHub, OpenAI, Anthropic, HuggingFace, Slack, Stripe, npm/PyPI, private keys, Basic Auth) before storage/LLM calls and enforces `leak-guard.yml` in CI.
+* **SSRF / SSTI / XXE AST Rules:** Detects Python SSRF (`requests`/`urllib`), SSTI (`jinja2`/`ejs`/`pug`), and unsafe XML parsing without `defusedxml`, paired with triage validation in the LLM prompt.
 
 ### 🗂️ Audited Grammars & Vulnerability Categories
 

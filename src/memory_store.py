@@ -318,7 +318,7 @@ class LocalDiagnosticMemory:
         Prepara apenas a assinatura matemática da AST e o resumo conceitual da solução.
         """
         if not selected_ids:
-            return {"client_version": "2.0.0", "contributions": []}
+            return {"client_version": "2.1.0", "contributions": []}
 
         records = self.collection.get(ids=selected_ids)
         contributions: List[Dict[str, str]] = []
@@ -338,7 +338,7 @@ class LocalDiagnosticMemory:
             )
 
         return {
-            "client_version": "2.0.0",
+            "client_version": "2.1.0",
             "contributions": contributions,
         }
 

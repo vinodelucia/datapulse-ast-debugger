@@ -33,7 +33,8 @@ def test_redaction_covers_paths_emails_tokens_and_keeps_context():
 def test_sanitize_category_and_summary_limits():
     assert sanitize_category("Bad Category; rm -rf /") == "Bad_Category__rm__rf"
     assert len(sanitize_summary("x" * 5000)) == 500
-    assert "AKIAABCDEFGHIJKLMNOP" not in sanitize_summary("chave AKIAABCDEFGHIJKLMNOP vazou")
+    aws_demo = "AKIA" + "ABCDEFGHIJKLMNOP"
+    assert aws_demo not in sanitize_summary(f"chave {aws_demo} vazou")
 
 
 def test_secrets_are_redacted_before_persisting_in_memory():

@@ -40,7 +40,7 @@ def _to_relative_uri(file_path: str, base_dir: Optional[str]) -> str:
 
 def build_sarif_report(
     records: Sequence[Union[DiagnosticRecord, Dict[str, Any]]],
-    tool_version: str = "2.0.0",
+    tool_version: str = "2.1.0",
     base_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Constrói um relatório SARIF 2.1.0 válido para GitHub Code Scanning."""

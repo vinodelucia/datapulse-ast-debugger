@@ -9,6 +9,8 @@ import logging
 import re
 from typing import Any, List, Optional, Tuple
 
+from src.privacy import scan_secrets
+
 logger = logging.getLogger(__name__)
 
 FindingTuple = Tuple[str, int, str, Optional[str]]
@@ -158,12 +160,13 @@ def detect_python_ast(code: str) -> Optional[List[FindingTuple]]:
                 findings.append(("SQL_Injection_Vulnerability", line_off, "", None))
 
         if isinstance(node, ast.Assign):
-            # Hardcoded secret check on simple target names
+            # Hardcoded secret check on simple target names or known provider tokens
             if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
                 val = node.value.value
                 if len(val) >= 8 and not _PLACEHOLDER_RE.search(val):
+                    matched_secret = bool(scan_secrets(val))
                     for tgt in node.targets:
-                        if isinstance(tgt, ast.Name) and _SECRET_VAR_RE.search(tgt.id):
+                        if isinstance(tgt, ast.Name) and (_SECRET_VAR_RE.search(tgt.id) or matched_secret):
                             findings.append(("Python_Hardcoded_Secret", line_off, tgt.id, None))
             # Chained indexing df[mask][col] = val
             for tgt in node.targets:
@@ -198,13 +201,39 @@ def detect_python_ast(code: str) -> Optional[List[FindingTuple]]:
                 elif func.id == "read_csv":
                     if not any(k in kw_map for k in ("dtype", "usecols", "chunksize")):
                         findings.append(("Pandas_ReadCsv_Unoptimized", line_off, "", None))
+                elif func.id == "render_template_string" and node.args:
+                    if not isinstance(node.args[0], ast.Constant):
+                        findings.append(("Python_SSTI_Template_Injection", line_off, func.id, None))
+                elif func.id == "urlopen" and node.args:
+                    if not isinstance(node.args[0], ast.Constant):
+                        findings.append(("Python_SSRF_Dynamic_Request", line_off, "urlopen", None))
 
             elif isinstance(func, ast.Attribute):
                 attr = func.attr
                 root = _attr_chain_root(func.value)
+                has_defused_xml = "defusedxml" in code
 
                 if root == "subprocess" and isinstance(kw_map.get("shell"), ast.Constant) and kw_map["shell"].value is True:
                     findings.append(("Subprocess_Shell_Injection_Risk", line_off, "", None))
+                elif root in ("requests", "httpx") and attr in ("get", "post", "put", "delete", "head", "request"):
+                    url_arg = kw_map.get("url") or (node.args[0] if node.args else None)
+                    is_upper_const = (
+                        isinstance(url_arg, ast.Attribute) and url_arg.attr.isupper()
+                    ) or (isinstance(url_arg, ast.Name) and url_arg.id.isupper())
+                    if url_arg is not None and not isinstance(url_arg, ast.Constant) and not is_upper_const:
+                        findings.append(("Python_SSRF_Dynamic_Request", line_off, f"{root}.{attr}", None))
+                elif root == "urllib" and attr == "urlopen":
+                    url_arg = kw_map.get("url") or (node.args[0] if node.args else None)
+                    if url_arg is not None and not isinstance(url_arg, ast.Constant):
+                        findings.append(("Python_SSRF_Dynamic_Request", line_off, "urllib.urlopen", None))
+                elif root in ("jinja2", "mako") and attr == "Template" and node.args:
+                    if not isinstance(node.args[0], ast.Constant):
+                        findings.append(("Python_SSTI_Template_Injection", line_off, f"{root}.Template", None))
+                elif not has_defused_xml and (
+                    (root in ("ET", "ElementTree", "lxml", "etree", "minidom") and attr in ("parse", "fromstring", "parseString"))
+                    or (root == "xml" and attr in ("parse", "fromstring", "parseString"))
+                ):
+                    findings.append(("Python_XXE_Unsafe_XML", line_off, f"{root}.{attr}", None))
                 elif attr in ("load", "loads") and root in ("pickle", "marshal"):
                     findings.append(("Python_Insecure_Deserialization", line_off, f"{root}.{attr}", None))
                 elif attr == "load" and root == "yaml":
@@ -494,8 +523,9 @@ def detect_js_ast(code: str) -> Optional[List[FindingTuple]]:
             val_node = node.child_by_field_name("value")
             if name_node and val_node and val_node.type == "string":
                 raw_val = _text(val_node).strip("'\"`")
-                if _SECRET_VAR_RE.search(_text(name_node)) and len(raw_val) >= 8 and not _PLACEHOLDER_RE.search(raw_val):
-                    findings.append(("JS_Hardcoded_Secret", line_off, _text(name_node), None))
+                if len(raw_val) >= 8 and not _PLACEHOLDER_RE.search(raw_val):
+                    if _SECRET_VAR_RE.search(_text(name_node)) or scan_secrets(raw_val):
+                        findings.append(("JS_Hardcoded_Secret", line_off, _text(name_node), None))
 
         if ntype == "assignment_expression":
             left = node.child_by_field_name("left")
@@ -550,6 +580,11 @@ def detect_js_ast(code: str) -> Optional[List[FindingTuple]]:
 
                 if fn_text in _JS_HTTP_SINKS and re.search(r"\breq\.(?:query|body|params)\b", args_text):
                     findings.append(("JS_SSRF_Dynamic_Fetch", line_off, fn_text, None))
+
+                if fn_text in ("ejs.render", "pug.render", "handlebars.compile") and args is not None:
+                    named_args = [c for c in args.children if c.is_named]
+                    if named_args and named_args[0].type != "string":
+                        findings.append(("JS_SSTI_Template_Injection", line_off, fn_text, None))
 
                 if re.search(r"^(?:fs|fsp)\.(?:readFileSync|writeFileSync|appendFileSync|readdirSync|statSync|mkdirSync|unlinkSync)$", fn_text) or fn_text in ("execSync", "spawnSync"):
                     findings.append(("JS_Sync_IO_Blocking_EventLoop", line_off, fn_text, None))
